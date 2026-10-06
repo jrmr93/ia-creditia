@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix ia-creditia",
+  "description": "Gestor descentralizado de tarjetas de crédito y consumos por ciclo contable",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
