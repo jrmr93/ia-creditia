@@ -12,6 +12,13 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Info
 import java.util.Calendar
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -21,6 +28,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.filled.ZoomIn
 import coil.compose.AsyncImage
 import com.example.ui.components.ReceiptViewerDialog
+import com.example.ui.components.DiferirConsumoDialog
 import java.io.File
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -180,17 +188,22 @@ fun ConsumosScreen(
     var viewingReceiptTitle by remember { mutableStateOf("") }
     var viewingReceiptSubtitle by remember { mutableStateOf("") }
 
-    Column(
+    var selectedExpenseIds by remember { mutableStateOf(setOf<Long>()) }
+    var showMultiDeferDialog by remember { mutableStateOf(false) }
+    val isSelectionMode = selectedExpenseIds.isNotEmpty()
+
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
     ) {
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
             item { Spacer(modifier = Modifier.height(8.dp)) }
 
             // Search Bar if Active
@@ -1002,42 +1015,74 @@ fun ConsumosScreen(
                             }
                         }
 
-                        Box {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .clickable { showSortMenu = true }
-                                    .padding(horizontal = 6.dp, vertical = 4.dp)
-                                    .testTag("btn_sort")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Tune,
-                                    contentDescription = "Ordenar",
-                                    tint = CreditiaPrimary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Text(
-                                    text = "Ordenar",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = CreditiaPrimary
-                                )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (filteredExpenses.isNotEmpty()) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelectionMode) CreditiaTertiary.copy(alpha = 0.15f) else Color.Transparent)
+                                        .clickable {
+                                            selectedExpenseIds = if (isSelectionMode) emptySet() else setOf(filteredExpenses.first().id)
+                                        }
+                                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Checklist,
+                                        contentDescription = "Seleccionar",
+                                        tint = if (isSelectionMode) CreditiaTertiary else CreditiaPrimary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = if (isSelectionMode) "Cancelar" else "Seleccionar",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isSelectionMode) CreditiaTertiary else CreditiaPrimary
+                                    )
+                                }
                             }
 
-                            DropdownMenu(
-                                expanded = showSortMenu,
-                                onDismissRequest = { showSortMenu = false }
-                            ) {
-                                SortOrder.values().forEach { order ->
-                                    DropdownMenuItem(
-                                        text = { Text(order.displayName, fontSize = 13.sp) },
-                                        onClick = {
-                                            viewModel.setSortOrder(order)
-                                            showSortMenu = false
-                                        }
+                            Box {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { showSortMenu = true }
+                                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                                        .testTag("btn_sort")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tune,
+                                        contentDescription = "Ordenar",
+                                        tint = CreditiaPrimary,
+                                        modifier = Modifier.size(16.dp)
                                     )
+                                    Text(
+                                        text = "Ordenar",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = CreditiaPrimary
+                                    )
+                                }
+
+                                DropdownMenu(
+                                    expanded = showSortMenu,
+                                    onDismissRequest = { showSortMenu = false }
+                                ) {
+                                    SortOrder.values().forEach { order ->
+                                        DropdownMenuItem(
+                                            text = { Text(order.displayName, fontSize = 13.sp) },
+                                            onClick = {
+                                                viewModel.setSortOrder(order)
+                                                showSortMenu = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1086,8 +1131,18 @@ fun ConsumosScreen(
                     }
                 } else {
                     items(filteredExpenses, key = { it.id }) { expense ->
+                        val isSelected = expense.id in selectedExpenseIds
                         ExpenseCardItem(
                             expense = expense,
+                            isSelected = isSelected,
+                            isSelectionMode = isSelectionMode,
+                            onToggleSelect = {
+                                selectedExpenseIds = if (isSelected) {
+                                    selectedExpenseIds - expense.id
+                                } else {
+                                    selectedExpenseIds + expense.id
+                                }
+                            },
                             onEdit = {
                                 viewModel.startEditExpense(expense)
                                 onNavigateToNewExpense()
@@ -1108,9 +1163,145 @@ fun ConsumosScreen(
             // 6. Offline Footnote
             item {
                 OfflineStatusFootnote()
-                Spacer(modifier = Modifier.height(80.dp))
+                Spacer(modifier = Modifier.height(if (isSelectionMode) 120.dp else 80.dp))
             }
         }
+    }
+
+    // Barra Flotante de Selección Múltiple
+    AnimatedVisibility(
+        visible = isSelectionMode,
+        enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .padding(16.dp)
+    ) {
+        val selectedExpenses = allExpenses.filter { it.id in selectedExpenseIds }
+        val totalSelectedAmount = selectedExpenses.sumOf { it.amount }
+
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 8.dp,
+            shadowElevation = 8.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .border(1.dp, CreditiaPrimary.copy(alpha = 0.35f), RoundedCornerShape(18.dp))
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "${selectedExpenseIds.size} consumos seleccionados",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Suma total: S/ ${String.format(Locale.US, "%.2f", totalSelectedAmount)}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = CreditiaPrimary
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        TextButton(
+                            onClick = {
+                                if (selectedExpenseIds.size == filteredExpenses.size) {
+                                    selectedExpenseIds = emptySet()
+                                } else {
+                                    selectedExpenseIds = filteredExpenses.map { it.id }.toSet()
+                                }
+                            }
+                        ) {
+                            Text(
+                                text = if (selectedExpenseIds.size == filteredExpenses.size) "Deseleccionar" else "Todos",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        IconButton(onClick = { selectedExpenseIds = emptySet() }) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Cancelar selección",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                Button(
+                    onClick = { showMultiDeferDialog = true },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = CreditiaTertiary),
+                    shape = RoundedCornerShape(10.dp),
+                    enabled = selectedExpenseIds.isNotEmpty()
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CalendarMonth,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = if (selectedExpenseIds.size > 1) {
+                                "Diferir ${selectedExpenseIds.size} Consumos Juntos (S/ ${String.format(Locale.US, "%.2f", totalSelectedAmount)})"
+                            } else {
+                                "Diferir Consumo Seleccionado (S/ ${String.format(Locale.US, "%.2f", totalSelectedAmount)})"
+                            },
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Modal para diferir los consumos consolidados
+    if (showMultiDeferDialog && selectedExpenseIds.isNotEmpty()) {
+        val selectedExpenses = allExpenses.filter { it.id in selectedExpenseIds }
+        val totalSelectedAmount = selectedExpenses.sumOf { it.amount }
+        val latestDate = selectedExpenses.maxByOrNull { it.dateString }?.dateString ?: "2026/10/01"
+        val combinedEstablishment = selectedExpenses.map { it.establishment }
+            .distinct()
+            .joinToString(" + ")
+            .take(45)
+        val card = selectedCard ?: uiState.selectedCard
+        val cutDay = card?.cutDay ?: 24
+
+        DiferirConsumoDialog(
+            amount = totalSelectedAmount,
+            establishment = combinedEstablishment,
+            dateString = latestDate,
+            cutDay = cutDay,
+            cardName = card?.cardName ?: "Tarjeta",
+            repository = viewModel.repository,
+            onDismiss = { showMultiDeferDialog = false },
+            onConfirm = { months, monthlyInterestRate ->
+                showMultiDeferDialog = false
+                viewModel.deferMultipleExpenses(selectedExpenses, months, monthlyInterestRate) {
+                    selectedExpenseIds = emptySet()
+                }
+            }
+        )
     }
 
     // Modal de confirmación de eliminación
@@ -1441,6 +1632,7 @@ fun ConsumosScreen(
             }
         }
     }
+}
     // Visor de Comprobante a Pantalla Completa con Zoom
     if (viewingReceiptUri != null) {
         ReceiptViewerDialog(
@@ -1452,9 +1644,13 @@ fun ConsumosScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ExpenseCardItem(
     expense: ExpenseEntity,
+    isSelected: Boolean = false,
+    isSelectionMode: Boolean = false,
+    onToggleSelect: () -> Unit = {},
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onReceiptClick: ((receiptUri: String, title: String, subtitle: String) -> Unit)? = null,
@@ -1462,10 +1658,26 @@ fun ExpenseCardItem(
 ) {
     Card(
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = CreditiaSurfaceContainerLowest),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) CreditiaPrimary.copy(alpha = 0.08f) else CreditiaSurfaceContainerLowest
+        ),
+        border = if (isSelected) BorderStroke(1.5.dp, CreditiaPrimary) else null,
+        elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 4.dp else 2.dp),
         modifier = modifier
             .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .combinedClickable(
+                onClick = {
+                    if (isSelectionMode) {
+                        onToggleSelect()
+                    } else {
+                        onEdit()
+                    }
+                },
+                onLongClick = {
+                    onToggleSelect()
+                }
+            )
             .testTag("expense_card_${expense.id}")
     ) {
         Column(
@@ -1484,6 +1696,31 @@ fun ExpenseCardItem(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.weight(1f)
                 ) {
+                    // Checkbox / selection indicator when in selection mode
+                    if (isSelectionMode) {
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(if (isSelected) CreditiaPrimary else Color.Transparent)
+                                .border(
+                                    1.5.dp,
+                                    if (isSelected) CreditiaPrimary else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                                    CircleShape
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = "Seleccionado",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            }
+                        }
+                    }
+
                     // Sequence index badge
                     Box(
                         modifier = Modifier

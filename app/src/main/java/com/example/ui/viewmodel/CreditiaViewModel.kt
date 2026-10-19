@@ -723,6 +723,31 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun deferMultipleExpenses(
+        selectedExpenses: List<ExpenseEntity>,
+        months: Int,
+        monthlyInterestRate: Double,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                if (selectedExpenses.isEmpty()) return@launch
+                val card = _uiState.value.cards.find { it.id == selectedExpenses.first().cardId } ?: _uiState.value.selectedCard
+                val cutDay = card?.cutDay ?: 24
+                repository.deferMultipleExpenses(
+                    selectedExpenses = selectedExpenses,
+                    months = months,
+                    monthlyInterestRate = monthlyInterestRate,
+                    cutDay = cutDay
+                )
+                showToast("✓ ${selectedExpenses.size} consumos consolidados en $months cuotas con éxito")
+                onSuccess()
+            } catch (e: Exception) {
+                showToast("Error al diferir consumos: ${e.localizedMessage}")
+            }
+        }
+    }
+
     // Helper functions for UI
     fun getFilteredExpenses(
         expenses: List<ExpenseEntity>,

@@ -304,4 +304,62 @@ class CreditiaRepository(
 
         return resultList
     }
+
+    /**
+     * Consolidates multiple selected expenses into a single deferred installment plan.
+     * Calculates the sum of all selected expenses, deletes the individual original expenses,
+     * and generates a unified schedule of N installments with a shared deferredGroupId.
+     */
+    suspend fun deferMultipleExpenses(
+        selectedExpenses: List<ExpenseEntity>,
+        months: Int,
+        monthlyInterestRate: Double,
+        cutDay: Int
+    ): List<ExpenseEntity> {
+        if (selectedExpenses.isEmpty()) return emptyList()
+
+        val totalAmount = selectedExpenses.sumOf { it.amount }
+        val latestDate = selectedExpenses.maxByOrNull { it.dateString }?.dateString ?: "2026/10/01"
+        val combinedEstablishment = selectedExpenses.map { it.establishment }
+            .distinct()
+            .joinToString(" + ")
+            .take(45)
+
+        val plan = calculateInstallmentPlan(
+            amount = totalAmount,
+            months = months,
+            monthlyInterestRate = monthlyInterestRate,
+            startDateString = latestDate,
+            cutDay = cutDay
+        )
+
+        val groupId = "def_multi_${System.currentTimeMillis()}"
+        var currentSeq = getNextSequenceNumber()
+        val cardId = selectedExpenses.first().cardId
+        val sharedReceipt = selectedExpenses.firstOrNull { !it.receiptUri.isNullOrBlank() }?.receiptUri
+
+        val newInstallments = plan.mapIndexed { index, itemPlan ->
+            val k = index + 1
+            ExpenseEntity(
+                sequenceNumber = currentSeq++,
+                cardId = cardId,
+                establishment = combinedEstablishment,
+                description = "Diferido Unificado (Cuota $k/$months)",
+                amount = itemPlan.amount,
+                dateString = itemPlan.dateString,
+                billingPeriod = itemPlan.billingPeriod,
+                deferredGroupId = groupId,
+                receiptUri = sharedReceipt,
+                timestamp = System.currentTimeMillis() + k
+            )
+        }
+
+        // Delete the individual original records
+        selectedExpenses.forEach { expenseDao.deleteExpense(it) }
+
+        // Insert the unified installment schedule
+        expenseDao.insertExpenses(newInstallments)
+
+        return newInstallments
+    }
 }
