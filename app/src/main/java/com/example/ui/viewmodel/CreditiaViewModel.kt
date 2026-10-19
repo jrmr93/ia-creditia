@@ -51,6 +51,7 @@ data class CreditiaUiState(
     val selectedCard: CreditCardEntity? = null,
     val selectedPeriod: String = "",
     val selectedExactDate: String? = null,
+    val filterOnlyDeferred: Boolean = false,
     val sortOrder: SortOrder = SortOrder.DATE_DESC,
     val searchQuery: String = "",
     val isSearchActive: Boolean = false,
@@ -203,6 +204,12 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     fun setSortOrder(order: SortOrder) {
         _uiState.update { it.copy(sortOrder = order) }
         showToast("Orden: ${order.displayName}")
+    }
+
+    fun toggleFilterOnlyDeferred(onlyDeferred: Boolean? = null) {
+        val next = onlyDeferred ?: !_uiState.value.filterOnlyDeferred
+        _uiState.update { it.copy(filterOnlyDeferred = next) }
+        showToast(if (next) "Filtrando: Solo compras diferidas" else "Mostrando todos los consumos")
     }
 
     fun setSearchQuery(query: String) {
@@ -559,6 +566,28 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
 
         val parsed = com.example.util.BackupUtil.parseBackup(app, inputStream)
 
+        // Restaurar configuración y preferencias de la aplicación si están presentes
+        if (parsed.preferences.isNotEmpty()) {
+            val editor = prefs.edit()
+            for ((key, value) in parsed.preferences) {
+                when (value) {
+                    is Boolean -> editor.putBoolean(key, value)
+                    is Int -> editor.putInt(key, value)
+                    is Long -> editor.putLong(key, value)
+                    is Double -> {
+                        if (key == "notification_lead_days") {
+                            editor.putInt(key, value.toInt())
+                        } else {
+                            editor.putLong(key, value.toLong())
+                        }
+                    }
+                    is String -> editor.putString(key, value)
+                    else -> if (value != null) editor.putString(key, value.toString())
+                }
+            }
+            editor.apply()
+        }
+
         val idMapping = mutableMapOf<Long, Long>()
         var restoredCards = 0
         var restoredExpenses = 0
@@ -583,20 +612,49 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         }
 
         val allCardsList = repository.getAllCardsList()
-        val firstCard = allCardsList.firstOrNull()
+        val targetCard = allCardsList.firstOrNull { it.isDefault } ?: allCardsList.firstOrNull()
+        val defaultPeriod = targetCard?.let { getCurrentActivePeriod(it) } ?: ""
+
+        val savedPin = prefs.getString("master_pin", "") ?: ""
+        val isFirst = prefs.getBoolean("is_first_launch", true) || savedPin.isEmpty()
+        val biometricsEnabled = prefs.getBoolean("biometrics_enabled", true)
+        val notifEnabled = prefs.getBoolean("payment_notifications_enabled", false)
+        val leadDays = prefs.getInt("notification_lead_days", 3)
+        val aiEnabled = prefs.getBoolean("gemini_ai_enabled", true)
+        val savedGeminiKey = prefs.getString("gemini_api_key", "") ?: ""
+        val savedGeminiModel = prefs.getString("gemini_model", "gemini-3.5-flash") ?: "gemini-3.5-flash"
+
+        if (notifEnabled) {
+            ensureNotificationChannel()
+            schedulePaymentAlarm()
+        } else {
+            cancelPaymentAlarm()
+        }
+
         _uiState.update { current ->
             current.copy(
                 cards = allCardsList,
-                selectedCard = firstCard,
+                selectedCard = targetCard,
+                selectedPeriod = defaultPeriod,
                 currentTab = "consumos",
                 isSearchActive = false,
                 searchQuery = "",
                 selectedExpenseIds = emptySet(),
-                isSelectionMode = false
+                isSelectionMode = false,
+                isVaultUnlocked = true,
+                masterPin = savedPin,
+                isFirstLaunch = isFirst,
+                isBiometricsActive = biometricsEnabled,
+                isPaymentNotificationEnabled = notifEnabled,
+                notificationLeadDays = leadDays,
+                isGeminiAiEnabled = aiEnabled,
+                geminiApiKey = savedGeminiKey,
+                geminiModel = savedGeminiModel
             )
         }
         val photoMsg = if (parsed.photosCount > 0) " y ${parsed.photosCount} fotos" else ""
-        showToast("✓ Respaldo restaurado: $restoredCards tarjetas, $restoredExpenses consumos$photoMsg")
+        val configMsg = if (parsed.preferences.isNotEmpty()) ", configuración" else ""
+        showToast("✓ Respaldo restaurado: $restoredCards tarjetas, $restoredExpenses consumos$configMsg$photoMsg")
         return Triple(restoredCards, restoredExpenses, parsed.photosCount)
     }
 
@@ -609,6 +667,21 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         json.put("export_date", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
         json.put("cards_count", cards.size)
         json.put("expenses_count", expenses.size)
+
+        // Exportar configuración completa de la aplicación (SharedPreferences)
+        val prefsObj = JSONObject()
+        for ((key, value) in prefs.all) {
+            when (value) {
+                is Boolean -> prefsObj.put(key, value)
+                is Int -> prefsObj.put(key, value)
+                is Long -> prefsObj.put(key, value)
+                is Float -> prefsObj.put(key, value.toDouble())
+                is Double -> prefsObj.put(key, value)
+                is String -> prefsObj.put(key, value)
+                else -> if (value != null) prefsObj.put(key, value.toString())
+            }
+        }
+        json.put("preferences", prefsObj)
 
         val cardsArray = JSONArray()
         for (c in cards) {
@@ -806,7 +879,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         selectedPeriod: String,
         selectedExactDate: String?,
         searchQuery: String,
-        sortOrder: SortOrder
+        sortOrder: SortOrder,
+        filterOnlyDeferred: Boolean = false
     ): List<ExpenseEntity> {
         val cardId = selectedCard?.id ?: return emptyList()
         var list = expenses.filter { it.cardId == cardId }
@@ -815,6 +889,10 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             list = list.filter { it.dateString == selectedExactDate }
         } else if (selectedPeriod != "Todos los periodos" && selectedPeriod != "Todos los históricos") {
             list = list.filter { it.billingPeriod.equals(selectedPeriod, ignoreCase = true) }
+        }
+
+        if (filterOnlyDeferred) {
+            list = list.filter { it.isDeferredExpense() }
         }
 
         if (searchQuery.isNotBlank()) {
@@ -834,14 +912,20 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun calculatePeriodSum(expenses: List<ExpenseEntity>, cardId: Long, period: String, exactDate: String? = null): Double {
+    fun calculatePeriodSum(
+        expenses: List<ExpenseEntity>,
+        cardId: Long,
+        period: String,
+        exactDate: String? = null,
+        filterOnlyDeferred: Boolean = false
+    ): Double {
         if (!exactDate.isNullOrBlank()) {
-            return expenses.filter { it.cardId == cardId && it.dateString == exactDate }.sumOf { it.amount }
+            return expenses.filter { it.cardId == cardId && it.dateString == exactDate && (!filterOnlyDeferred || it.isDeferredExpense()) }.sumOf { it.amount }
         }
         val target = if (period == "Todos los periodos" || period == "Todos los históricos") {
-            expenses.filter { it.cardId == cardId }
+            expenses.filter { it.cardId == cardId && (!filterOnlyDeferred || it.isDeferredExpense()) }
         } else {
-            expenses.filter { it.cardId == cardId && it.billingPeriod.equals(period, ignoreCase = true) }
+            expenses.filter { it.cardId == cardId && it.billingPeriod.equals(period, ignoreCase = true) && (!filterOnlyDeferred || it.isDeferredExpense()) }
         }
         return target.sumOf { it.amount }
     }
@@ -976,9 +1060,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * Computes available periods showing ONLY periods that have stored records in the database.
-     * The CURRENT active period is placed at the very beginning if it has records,
-     * followed by remaining expense periods in descending chronological order, and "Todos los históricos".
+     * Computa los periodos disponibles ordenados estrictamente por año y mes cronológicamente descendente:
+     * periodos futuros (que aún no llegan) hacia arriba, periodo actual en medio, y periodos pasados hacia abajo.
      */
     fun getAvailablePeriods(card: CreditCardEntity?, expenses: List<ExpenseEntity>): List<String> {
         val currentActivePeriod = getCurrentActivePeriod(card)
@@ -992,7 +1075,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         fun parseYearMonth(p: String): Pair<Int, Int>? {
             val parts = p.trim().split(" ")
             if (parts.size == 2) {
-                val mIdx = monthNames.indexOf(parts[0])
+                val mIdx = monthNames.indexOfFirst { it.equals(parts[0], ignoreCase = true) }
                 val yr = parts[1].toIntOrNull()
                 if (mIdx != -1 && yr != null) {
                     return Pair(yr, mIdx)
@@ -1001,34 +1084,35 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             return null
         }
 
-        // Obtener ÚNICAMENTE los periodos que tienen registros almacenados
+        // Obtener los periodos únicos de los registros almacenados
         val expensePeriods = cardExpenses
             .map { it.billingPeriod }
-            .filter { it.isNotBlank() && it != "Todos los históricos" }
+            .filter { it.isNotBlank() && it != "Todos los históricos" && it != "Todos los periodos" }
             .distinct()
 
-        if (expensePeriods.isEmpty()) {
+        // Incluir siempre el periodo activo actual de la tarjeta
+        val allPeriods = if (currentActivePeriod.isNotBlank()) {
+            (expensePeriods + currentActivePeriod).distinct()
+        } else {
+            expensePeriods
+        }
+
+        if (allPeriods.isEmpty()) {
             return listOf(currentActivePeriod)
         }
 
-        // Ordenar periodos con registros almacenados cronológicamente descendente (más reciente primero)
-        val sortedPeriods = expensePeriods
+        // Ordenar periodos cronológicamente descendente:
+        // Años y meses mayores arriba (futuros que aún no llegan), actual en medio, pasados hacia abajo
+        val sortedPeriods = allPeriods
             .mapNotNull { p ->
                 parseYearMonth(p)?.let { Triple(it.first, it.second, p) }
             }.sortedWith(compareByDescending<Triple<Int, Int, String>> { it.first }.thenByDescending { it.second })
             .map { it.third }
 
-        // Si el periodo actual tiene registros almacenados, colocarlo al principio de la lista
-        val orderedList = if (currentActivePeriod in sortedPeriods) {
-            listOf(currentActivePeriod) + sortedPeriods.filter { it != currentActivePeriod }
+        return if (sortedPeriods.size > 1) {
+            sortedPeriods + listOf("Todos los históricos")
         } else {
             sortedPeriods
-        }
-
-        return if (orderedList.size > 1) {
-            orderedList + listOf("Todos los históricos")
-        } else {
-            orderedList
         }
     }
 

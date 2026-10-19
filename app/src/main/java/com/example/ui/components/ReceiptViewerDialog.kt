@@ -5,8 +5,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -72,20 +73,16 @@ fun ReceiptViewerDialog(
 
     var scale by remember(activePhotoUri) { mutableFloatStateOf(1f) }
     var offset by remember(activePhotoUri) { mutableStateOf(Offset.Zero) }
+    var containerSize by remember { mutableStateOf(IntSize(1080, 1920)) }
 
-    val transformState = rememberTransformableState { zoomChange, offsetChange, _ ->
-        val newScale = (scale * zoomChange).coerceIn(1f, 6f)
-        scale = newScale
-        if (newScale > 1f) {
-            val maxBoundX = (newScale - 1f) * 600f
-            val maxBoundY = (newScale - 1f) * 1000f
-            offset = Offset(
-                x = (offset.x + offsetChange.x).coerceIn(-maxBoundX, maxBoundX),
-                y = (offset.y + offsetChange.y).coerceIn(-maxBoundY, maxBoundY)
-            )
-        } else {
-            offset = Offset.Zero
-        }
+    fun clampOffset(proposedOffset: Offset, currentScale: Float): Offset {
+        if (currentScale <= 1f) return Offset.Zero
+        val maxBoundX = ((currentScale - 1f) * containerSize.width / 2f + 120f).coerceAtLeast(0f)
+        val maxBoundY = ((currentScale - 1f) * containerSize.height / 2f + 180f).coerceAtLeast(0f)
+        return Offset(
+            x = proposedOffset.x.coerceIn(-maxBoundX, maxBoundX),
+            y = proposedOffset.y.coerceIn(-maxBoundY, maxBoundY)
+        )
     }
 
     Dialog(
@@ -101,29 +98,55 @@ fun ReceiptViewerDialog(
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.96f))
         ) {
-            // Imagen central interactiva con gestos de zoom y arrastre
+            // Imagen central interactiva con zoom enfocado en el punto del gesto y paneo rápido
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .onSizeChanged { containerSize = it }
                     .pointerInput(activePhotoUri) {
                         detectTapGestures(
-                            onDoubleTap = {
+                            onDoubleTap = { tapOffset ->
                                 if (scale > 1.2f) {
                                     scale = 1f
                                     offset = Offset.Zero
                                 } else {
-                                    scale = 2.5f
+                                    val targetScale = 2.8f
+                                    val center = Offset(containerSize.width / 2f, containerSize.height / 2f)
+                                    val focalFromCenter = tapOffset - center
+                                    val targetOffset = -focalFromCenter * (targetScale - 1f)
+                                    scale = targetScale
+                                    offset = clampOffset(targetOffset, targetScale)
                                 }
                             }
                         )
+                    }
+                    .pointerInput(activePhotoUri) {
+                        detectTransformGestures { centroid, pan, zoom, _ ->
+                            val panMultiplier = 1.9f // Multiplicador para mover la imagen mucho más rápido
+                            val newScale = (scale * zoom).coerceIn(1f, 7f)
+                            if (newScale > 1f) {
+                                val scaleFactor = newScale / scale
+                                val center = Offset(containerSize.width / 2f, containerSize.height / 2f)
+                                val focalFromCenter = centroid - center
+
+                                // Focal zoom: se amplía exactamente la parte donde se realiza el gesto de zoom
+                                val zoomedOffset = (offset * scaleFactor) +
+                                        (focalFromCenter * (1f - scaleFactor)) +
+                                        (pan * panMultiplier)
+
+                                offset = clampOffset(zoomedOffset, newScale)
+                            } else {
+                                offset = Offset.Zero
+                            }
+                            scale = newScale
+                        }
                     }
                     .graphicsLayer(
                         scaleX = scale,
                         scaleY = scale,
                         translationX = offset.x,
                         translationY = offset.y
-                    )
-                    .transformable(state = transformState),
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 val imageModel: Any = if (activePhotoUri.startsWith("/") || activePhotoUri.startsWith("file://")) {
@@ -323,7 +346,7 @@ fun ReceiptViewerDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Pellizca para zoom • Doble toque para ampliar/reducir",
+                        text = "Pellizca hacia cualquier parte • Desliza rápido para mover • Doble toque",
                         fontSize = 11.sp,
                         color = Color.White.copy(alpha = 0.8f)
                     )
@@ -331,8 +354,9 @@ fun ReceiptViewerDialog(
                     Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         IconButton(
                             onClick = {
-                                scale = (scale - 0.5f).coerceAtLeast(1f)
-                                if (scale <= 1f) offset = Offset.Zero
+                                val newScale = (scale - 0.5f).coerceAtLeast(1f)
+                                scale = newScale
+                                offset = clampOffset(offset, newScale)
                             },
                             enabled = scale > 1f,
                             modifier = Modifier.size(32.dp)
@@ -346,15 +370,17 @@ fun ReceiptViewerDialog(
                         }
                         IconButton(
                             onClick = {
-                                scale = (scale + 0.5f).coerceAtMost(5f)
+                                val newScale = (scale + 0.5f).coerceAtMost(7f)
+                                scale = newScale
+                                offset = clampOffset(offset, newScale)
                             },
-                            enabled = scale < 5f,
+                            enabled = scale < 7f,
                             modifier = Modifier.size(32.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.ZoomIn,
                                 contentDescription = "Acercar",
-                                tint = if (scale < 5f) Color.White else Color.White.copy(alpha = 0.3f),
+                                tint = if (scale < 7f) Color.White else Color.White.copy(alpha = 0.3f),
                                 modifier = Modifier.size(18.dp)
                             )
                         }
