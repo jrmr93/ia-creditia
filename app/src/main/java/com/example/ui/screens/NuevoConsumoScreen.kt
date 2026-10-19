@@ -1529,17 +1529,45 @@ fun NuevoConsumoScreen(
                 },
                 title = {
                     Text(
-                        text = "¿Eliminar este consumo?",
+                        text = if (editing.isDeferredExpense()) "¿Eliminar consumo diferido?" else "¿Eliminar este consumo?",
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp
                     )
                 },
                 text = {
-                    Text(
-                        text = "¿Deseas eliminar permanentemente el registro #${editing.sequenceNumber} (${editing.establishment} por $ ${String.format(Locale.US, "%.2f", editing.amount)}) de la base de datos local?",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "¿Deseas eliminar permanentemente el registro #${editing.sequenceNumber} (${editing.establishment} por S/ ${String.format(Locale.US, "%.2f", editing.amount)}) de la base de datos local?",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (editing.isDeferredExpense()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = CreditiaError.copy(alpha = 0.12f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = CreditiaError,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Este consumo forma parte de una compra diferida. Al eliminarlo, se eliminarán automáticamente todas sus cuotas en todos los periodos.",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = CreditiaError
+                                    )
+                                }
+                            }
+                        }
+                    }
                 },
                 confirmButton = {
                     Button(

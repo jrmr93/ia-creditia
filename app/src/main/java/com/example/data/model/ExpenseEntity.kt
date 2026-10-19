@@ -15,5 +15,19 @@ data class ExpenseEntity(
     val dateString: String, // "YYYY/MM/DD"
     val billingPeriod: String, // "Octubre 2026", "Noviembre 2026", etc.
     val receiptUri: String? = null,
+    val deferredGroupId: String? = null,
     val timestamp: Long = System.currentTimeMillis()
-)
+) {
+    fun isDeferredExpense(): Boolean {
+        if (!deferredGroupId.isNullOrBlank()) return true
+        return Regex("""\s*\(Cuota\s*\d+/\d+\)\s*$""").containsMatchIn(description)
+    }
+
+    fun getDeferredInfo(): Pair<Int, Int>? {
+        val match = Regex("""\s*\(Cuota\s*(\d+)/(\d+)\)\s*$""").find(description) ?: return null
+        val current = match.groupValues[1].toIntOrNull() ?: return null
+        val total = match.groupValues[2].toIntOrNull() ?: return null
+        return Pair(current, total)
+    }
+}
+

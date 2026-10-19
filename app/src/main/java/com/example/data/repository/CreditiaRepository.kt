@@ -4,6 +4,7 @@ import com.example.data.local.CreditCardDao
 import com.example.data.local.ExpenseDao
 import com.example.data.model.CreditCardEntity
 import com.example.data.model.ExpenseEntity
+import com.example.util.ReceiptStorageUtil
 import kotlinx.coroutines.flow.Flow
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -44,6 +45,50 @@ class CreditiaRepository(
     suspend fun deleteExpense(expense: ExpenseEntity) = expenseDao.deleteExpense(expense)
 
     suspend fun deleteExpenseById(id: Long) = expenseDao.deleteExpenseById(id)
+
+    suspend fun getDeferredInstallments(expense: ExpenseEntity): List<ExpenseEntity> {
+        if (!expense.deferredGroupId.isNullOrBlank()) {
+            return expenseDao.getExpensesByDeferredGroupId(expense.deferredGroupId)
+        }
+        val match = Regex("""^(.*?)\s*\(Cuota\s*(\d+)/(\d+)\)\s*$""").find(expense.description)
+        if (match != null) {
+            val baseDesc = match.groupValues[1].trim()
+            val totalInstallments = match.groupValues[3]
+            val pattern = if (baseDesc.isNotBlank()) "$baseDesc (Cuota %/$totalInstallments)" else "%(Cuota %/$totalInstallments)"
+            return expenseDao.findSimilarDeferredExpenses(expense.cardId, expense.establishment, pattern)
+        }
+        return emptyList()
+    }
+
+    /**
+     * Deletes an expense. If the expense is part of a deferred consumption,
+     * deletes ALL installment records belonging to that deferred group across
+     * all billing periods, as well as the receipt image file.
+     * Returns the number of expenses deleted.
+     */
+    suspend fun deleteExpenseWithCascade(target: ExpenseEntity): Int {
+        val groupExpenses = getDeferredInstallments(target)
+        if (groupExpenses.size > 1) {
+            groupExpenses.mapNotNull { it.receiptUri }.distinct().forEach { uri ->
+                ReceiptStorageUtil.deleteReceiptFile(uri)
+            }
+            if (!target.deferredGroupId.isNullOrBlank()) {
+                expenseDao.deleteExpensesByDeferredGroupId(target.deferredGroupId)
+            } else {
+                groupExpenses.forEach { expenseDao.deleteExpense(it) }
+            }
+            return groupExpenses.size
+        } else {
+            ReceiptStorageUtil.deleteReceiptFile(target.receiptUri)
+            expenseDao.deleteExpense(target)
+            return 1
+        }
+    }
+
+    suspend fun deleteExpenseByIdCascade(id: Long): Int {
+        val target = expenseDao.getExpenseById(id) ?: return 0
+        return deleteExpenseWithCascade(target)
+    }
 
     suspend fun clearAllData() {
         expenseDao.clearAllExpenses()
@@ -216,6 +261,7 @@ class CreditiaRepository(
         // Clean base description (strip any previous "(Cuota X/Y)")
         val baseDescription = originalExpense.description.replace(Regex("\\s*\\(Cuota\\s*\\d+/\\d+\\)"), "").trim()
         val baseEstablishment = originalExpense.establishment
+        val groupId = "def_${System.currentTimeMillis()}_${originalExpense.id}"
 
         // 1. Update original expense as Cuota 1
         val firstPlan = plan[0]
@@ -223,7 +269,8 @@ class CreditiaRepository(
             amount = firstPlan.amount,
             description = if (baseDescription.isNotBlank()) "$baseDescription (Cuota 1/$months)" else "Consumo (Cuota 1/$months)",
             billingPeriod = firstPlan.billingPeriod,
-            dateString = firstPlan.dateString
+            dateString = firstPlan.dateString,
+            deferredGroupId = groupId
         )
         expenseDao.updateExpense(updatedExpense1)
 
@@ -244,6 +291,7 @@ class CreditiaRepository(
                 dateString = itemPlan.dateString,
                 billingPeriod = itemPlan.billingPeriod,
                 receiptUri = originalExpense.receiptUri,
+                deferredGroupId = groupId,
                 timestamp = System.currentTimeMillis() + k
             )
             newExpenses.add(newExpense)

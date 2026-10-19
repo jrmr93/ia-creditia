@@ -230,20 +230,25 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     fun confirmDeleteExpense() {
         val target = _uiState.value.expenseToDelete ?: return
         viewModelScope.launch {
-            ReceiptStorageUtil.deleteReceiptFile(target.receiptUri)
-            repository.deleteExpenseById(target.id)
+            val count = repository.deleteExpenseWithCascade(target)
             _uiState.update { it.copy(expenseToDelete = null) }
-            showToast("Consumo eliminado correctamente")
+            if (count > 1) {
+                showToast("✓ Se eliminaron las $count cuotas del consumo diferido de todos los periodos")
+            } else {
+                showToast("Consumo eliminado correctamente")
+            }
         }
     }
 
     fun deleteExpenseDirectly(expenseId: Long) {
         viewModelScope.launch {
-            val target = repository.getExpenseById(expenseId)
-            ReceiptStorageUtil.deleteReceiptFile(target?.receiptUri)
-            repository.deleteExpenseById(expenseId)
+            val count = repository.deleteExpenseByIdCascade(expenseId)
             _uiState.update { it.copy(expenseToDelete = null, editingExpense = null) }
-            showToast("Consumo eliminado correctamente")
+            if (count > 1) {
+                showToast("✓ Se eliminaron las $count cuotas del consumo diferido de todos los periodos")
+            } else {
+                showToast("Consumo eliminado correctamente")
+            }
         }
     }
 

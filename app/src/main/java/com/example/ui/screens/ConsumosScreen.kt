@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Info
 import java.util.Calendar
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
@@ -1135,17 +1136,45 @@ fun ConsumosScreen(
             },
             title = {
                 Text(
-                    text = "¿Eliminar consumo?",
+                    text = if (target.isDeferredExpense()) "¿Eliminar consumo diferido?" else "¿Eliminar consumo?",
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp
                 )
             },
             text = {
-                Text(
-                    text = "¿Deseas eliminar el registro #${target.sequenceNumber} (${target.establishment} por $ ${String.format(Locale.US, "%.2f", target.amount)}) de la base de datos local?",
-                    fontSize = 14.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "¿Deseas eliminar el registro #${target.sequenceNumber} (${target.establishment} por S/ ${String.format(Locale.US, "%.2f", target.amount)}) de la base de datos local?",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (target.isDeferredExpense()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = CreditiaError.copy(alpha = 0.12f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = null,
+                                    tint = CreditiaError,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Este consumo forma parte de una compra diferida. Al eliminarlo, se eliminarán automáticamente todas sus cuotas en todos los periodos.",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = CreditiaError
+                                )
+                            }
+                        }
+                    }
+                }
             },
             confirmButton = {
                 Button(
