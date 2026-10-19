@@ -113,4 +113,54 @@ class ExampleUnitTest {
     assertTrue("Julio 2026 debe estar después de Agosto 2026", julIdx > agoIdx)
     assertEquals("Todos los históricos", fullList.last())
   }
+
+  @Test
+  fun testDeferredFilteringLogic() {
+    val deferred1 = com.example.data.model.ExpenseEntity(
+      id = 1,
+      cardId = 1,
+      sequenceNumber = 1,
+      establishment = "Tienda Ripley",
+      description = "Televisor Smart 4K (Cuota 1/6)",
+      amount = 250.0,
+      dateString = "2026/10/10",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = "group_123"
+    )
+
+    val regularExpense = com.example.data.model.ExpenseEntity(
+      id = 2,
+      cardId = 1,
+      sequenceNumber = 2,
+      establishment = "Starbucks Café",
+      description = "Café Americano",
+      amount = 15.0,
+      dateString = "2026/10/12",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = null
+    )
+
+    val deferred2 = com.example.data.model.ExpenseEntity(
+      id = 3,
+      cardId = 1,
+      sequenceNumber = 3,
+      establishment = "Saga Falabella",
+      description = "Zapatillas Nike (Cuota 2/3)",
+      amount = 120.0,
+      dateString = "2026/10/15",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = null
+    )
+
+    val allExpenses = listOf(deferred1, regularExpense, deferred2)
+
+    val allCount = allExpenses.size
+    val deferredOnly = allExpenses.filter { it.isDeferredExpense() }
+
+    assertEquals(3, allCount)
+    assertEquals(2, deferredOnly.size)
+    assertTrue("deferred1 debe ser identificado como diferido", deferred1.isDeferredExpense())
+    assertFalse("regularExpense no debe ser identificado como diferido", regularExpense.isDeferredExpense())
+    assertTrue("deferred2 debe ser identificado como diferido por sufijo cuota", deferred2.isDeferredExpense())
+  }
 }

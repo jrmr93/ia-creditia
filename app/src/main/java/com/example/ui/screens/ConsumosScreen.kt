@@ -117,6 +117,7 @@ import com.example.ui.theme.CreditiaOnError
 import com.example.ui.theme.CreditiaOnErrorContainer
 import com.example.ui.theme.CreditiaPrimary
 import com.example.ui.theme.CreditiaPrimaryContainer
+import com.example.ui.theme.CreditiaSecondary
 import com.example.ui.theme.CreditiaSecondaryContainer
 import com.example.ui.theme.CreditiaSurfaceContainer
 import com.example.ui.theme.CreditiaSurfaceContainerHigh
@@ -160,11 +161,18 @@ fun ConsumosScreen(
         selectedPeriod = selectedPeriod,
         selectedExactDate = uiState.selectedExactDate,
         searchQuery = uiState.searchQuery,
-        sortOrder = uiState.sortOrder
+        sortOrder = uiState.sortOrder,
+        filterOnlyDeferred = uiState.filterOnlyDeferred
     )
 
     val periodSum = if (selectedCard != null) {
-        viewModel.calculatePeriodSum(allExpenses, selectedCard.id, selectedPeriod, uiState.selectedExactDate)
+        viewModel.calculatePeriodSum(
+            expenses = allExpenses,
+            cardId = selectedCard.id,
+            period = selectedPeriod,
+            exactDate = uiState.selectedExactDate,
+            filterOnlyDeferred = uiState.filterOnlyDeferred
+        )
     } else 0.0
 
     val historicalTotal = if (selectedCard != null) {
@@ -719,19 +727,24 @@ fun ConsumosScreen(
                                     }
                                 }
                             }
-                        }
-
-                        // Exact Date filter action row
+                                // Filtros secundarios: Fecha exacta y Solo diferidos
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Button to pick exact date
+                            // Botón de selección de fecha exacta
+                            val isDateActive = !uiState.selectedExactDate.isNullOrBlank()
                             Box(
                                 modifier = Modifier
+                                    .weight(1f)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(CreditiaSurfaceContainer)
+                                    .background(if (isDateActive) CreditiaPrimary.copy(alpha = 0.12f) else CreditiaSurfaceContainer)
+                                    .border(
+                                        1.dp,
+                                        if (isDateActive) CreditiaPrimary else Color.Transparent,
+                                        RoundedCornerShape(8.dp)
+                                    )
                                     .clickable {
                                         val cal = Calendar.getInstance()
                                         DatePickerDialog(
@@ -745,7 +758,7 @@ fun ConsumosScreen(
                                             cal.get(Calendar.DAY_OF_MONTH)
                                         ).show()
                                     }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                                    .padding(horizontal = 10.dp, vertical = 7.dp)
                                     .testTag("btn_filter_exact_date"),
                                 contentAlignment = Alignment.Center
                             ) {
@@ -756,40 +769,21 @@ fun ConsumosScreen(
                                     Icon(
                                         imageVector = Icons.Default.FilterAlt,
                                         contentDescription = "Filtrar por fecha exacta",
-                                        tint = CreditiaPrimary,
+                                        tint = if (isDateActive) CreditiaPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Text(
-                                        text = "Filtrar por fecha exacta",
+                                        text = if (isDateActive) uiState.selectedExactDate!! else "Por fecha",
                                         fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = CreditiaPrimary
+                                        fontWeight = if (isDateActive) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = if (isDateActive) CreditiaPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
                                     )
-                                }
-                            }
-
-                            // If exact date active, show clear badge
-                            if (!uiState.selectedExactDate.isNullOrBlank()) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(CreditiaPrimaryContainer)
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Text(
-                                            text = uiState.selectedExactDate,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color.White
-                                        )
+                                    if (isDateActive) {
                                         Icon(
                                             imageVector = Icons.Default.Clear,
                                             contentDescription = "Quitar filtro de fecha",
-                                            tint = Color.White,
+                                            tint = CreditiaPrimary,
                                             modifier = Modifier
                                                 .size(14.dp)
                                                 .clickable { viewModel.setExactDateFilter(null) }
@@ -798,18 +792,71 @@ fun ConsumosScreen(
                                     }
                                 }
                             }
-                        }
+
+                            // Botón/Chip Solo diferidos
+                            val isDeferredActive = uiState.filterOnlyDeferred
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isDeferredActive) CreditiaSecondaryContainer else CreditiaSurfaceContainer)
+                                    .border(
+                                        1.dp,
+                                        if (isDeferredActive) CreditiaSecondary else Color.Transparent,
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable {
+                                        viewModel.toggleFilterOnlyDeferred()
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 7.dp)
+                                    .testTag("btn_filter_only_deferred"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isDeferredActive) Icons.Default.CheckCircle else Icons.Default.EventRepeat,
+                                        contentDescription = "Filtrar solo consumos diferidos",
+                                        tint = if (isDeferredActive) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Text(
+                                        text = "Solo diferidos",
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isDeferredActive) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = if (isDeferredActive) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1
+                                    )
+                                    if (isDeferredActive) {
+                                        Icon(
+                                            imageVector = Icons.Default.Clear,
+                                            contentDescription = "Quitar filtro solo diferidos",
+                                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .clickable { viewModel.toggleFilterOnlyDeferred(false) }
+                                                .testTag("btn_clear_deferred_filter")
+                                        )
+                                    }
+                                }
+                            }
+                        }                    }
                     }
                 }
 
                 // 3. Resumen Financiero M3 con Gradiente Sutil de Confianza
                 item {
                     val summaryTitle = if (!uiState.selectedExactDate.isNullOrBlank()) {
-                        "TOTAL DE LA FECHA SELECCIONADA (${uiState.selectedExactDate})"
+                        if (uiState.filterOnlyDeferred) "TOTAL DIFERIDOS DEL DÍA (${uiState.selectedExactDate})"
+                        else "TOTAL DE LA FECHA SELECCIONADA (${uiState.selectedExactDate})"
                     } else if (selectedPeriod == "Todos los históricos") {
-                        "TOTAL HISTÓRICO COMPLETO"
+                        if (uiState.filterOnlyDeferred) "TOTAL DIFERIDOS HISTÓRICO COMPLETO"
+                        else "TOTAL HISTÓRICO COMPLETO"
                     } else {
-                        "SUMATORIA TOTAL: ${selectedPeriod.uppercase(Locale.ROOT)}"
+                        if (uiState.filterOnlyDeferred) "SUMATORIA DIFERIDOS: ${selectedPeriod.uppercase(Locale.ROOT)}"
+                        else "SUMATORIA TOTAL: ${selectedPeriod.uppercase(Locale.ROOT)}"
                     }
 
                     Card(
@@ -1085,6 +1132,41 @@ fun ConsumosScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // Chip de Filtro Solo Diferidos en la barra horizontal
+                            val isDeferredFilterActive = uiState.filterOnlyDeferred
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(100.dp))
+                                    .background(if (isDeferredFilterActive) CreditiaSecondary else CreditiaSurfaceContainer)
+                                    .border(
+                                        1.dp,
+                                        if (isDeferredFilterActive) CreditiaSecondary else CreditiaSurfaceContainerHigh,
+                                        RoundedCornerShape(100.dp)
+                                    )
+                                    .clickable {
+                                        viewModel.toggleFilterOnlyDeferred()
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                                    .testTag("chip_filter_deferred_tune")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isDeferredFilterActive) Icons.Default.CheckCircle else Icons.Default.EventRepeat,
+                                        contentDescription = null,
+                                        tint = if (isDeferredFilterActive) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Text(
+                                        text = "Solo diferidos",
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isDeferredFilterActive) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isDeferredFilterActive) Color.White else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
                             SortOrder.values().forEach { order ->
                                 val isSelected = uiState.sortOrder == order
                                 Box(
@@ -1136,7 +1218,15 @@ fun ConsumosScreen(
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(40.dp)
                                 )
-                                val emptyMessage = if (!uiState.selectedExactDate.isNullOrBlank()) {
+                                val emptyMessage = if (uiState.filterOnlyDeferred) {
+                                    if (!uiState.selectedExactDate.isNullOrBlank()) {
+                                        "No hay consumos diferidos en la fecha ${uiState.selectedExactDate}"
+                                    } else if (selectedPeriod == "Todos los históricos") {
+                                        "No hay consumos diferidos registrados en el historial de esta tarjeta"
+                                    } else {
+                                        "No hay consumos diferidos en el periodo $selectedPeriod"
+                                    }
+                                } else if (!uiState.selectedExactDate.isNullOrBlank()) {
                                     "No hay consumos en la fecha ${uiState.selectedExactDate}"
                                 } else if (selectedPeriod == "Todos los históricos") {
                                     "No hay consumos registrados en el historial de esta tarjeta"

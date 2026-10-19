@@ -51,6 +51,7 @@ data class CreditiaUiState(
     val selectedCard: CreditCardEntity? = null,
     val selectedPeriod: String = "",
     val selectedExactDate: String? = null,
+    val filterOnlyDeferred: Boolean = false,
     val sortOrder: SortOrder = SortOrder.DATE_DESC,
     val searchQuery: String = "",
     val isSearchActive: Boolean = false,
@@ -203,6 +204,12 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     fun setSortOrder(order: SortOrder) {
         _uiState.update { it.copy(sortOrder = order) }
         showToast("Orden: ${order.displayName}")
+    }
+
+    fun toggleFilterOnlyDeferred(onlyDeferred: Boolean? = null) {
+        val next = onlyDeferred ?: !_uiState.value.filterOnlyDeferred
+        _uiState.update { it.copy(filterOnlyDeferred = next) }
+        showToast(if (next) "Filtrando: Solo compras diferidas" else "Mostrando todos los consumos")
     }
 
     fun setSearchQuery(query: String) {
@@ -872,7 +879,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         selectedPeriod: String,
         selectedExactDate: String?,
         searchQuery: String,
-        sortOrder: SortOrder
+        sortOrder: SortOrder,
+        filterOnlyDeferred: Boolean = false
     ): List<ExpenseEntity> {
         val cardId = selectedCard?.id ?: return emptyList()
         var list = expenses.filter { it.cardId == cardId }
@@ -881,6 +889,10 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             list = list.filter { it.dateString == selectedExactDate }
         } else if (selectedPeriod != "Todos los periodos" && selectedPeriod != "Todos los históricos") {
             list = list.filter { it.billingPeriod.equals(selectedPeriod, ignoreCase = true) }
+        }
+
+        if (filterOnlyDeferred) {
+            list = list.filter { it.isDeferredExpense() }
         }
 
         if (searchQuery.isNotBlank()) {
@@ -900,14 +912,20 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    fun calculatePeriodSum(expenses: List<ExpenseEntity>, cardId: Long, period: String, exactDate: String? = null): Double {
+    fun calculatePeriodSum(
+        expenses: List<ExpenseEntity>,
+        cardId: Long,
+        period: String,
+        exactDate: String? = null,
+        filterOnlyDeferred: Boolean = false
+    ): Double {
         if (!exactDate.isNullOrBlank()) {
-            return expenses.filter { it.cardId == cardId && it.dateString == exactDate }.sumOf { it.amount }
+            return expenses.filter { it.cardId == cardId && it.dateString == exactDate && (!filterOnlyDeferred || it.isDeferredExpense()) }.sumOf { it.amount }
         }
         val target = if (period == "Todos los periodos" || period == "Todos los históricos") {
-            expenses.filter { it.cardId == cardId }
+            expenses.filter { it.cardId == cardId && (!filterOnlyDeferred || it.isDeferredExpense()) }
         } else {
-            expenses.filter { it.cardId == cardId && it.billingPeriod.equals(period, ignoreCase = true) }
+            expenses.filter { it.cardId == cardId && it.billingPeriod.equals(period, ignoreCase = true) && (!filterOnlyDeferred || it.isDeferredExpense()) }
         }
         return target.sumOf { it.amount }
     }
