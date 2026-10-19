@@ -146,7 +146,7 @@ fun AjustesScreen(
                         viewModel.exportFullBackup(outputStream)
                     }
                     withContext(Dispatchers.Main) {
-                        viewModel.showToast("✓ Respaldo completo guardado exitosamente (tarjetas, consumos y fotos)")
+                        viewModel.showToast("✓ Respaldo completo guardado exitosamente (tarjetas, consumos, configuración y fotos)")
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
@@ -1648,7 +1648,7 @@ fun AjustesScreen(
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Guarda tarjetas, consumos y fotos en un paquete comprimido seguro",
+                                                text = "Guarda tarjetas, consumos, configuración y fotos en un paquete comprimido seguro",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -1700,7 +1700,7 @@ fun AjustesScreen(
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Restaura tu base de datos completa con fotos y cuotas diferidas",
+                                                text = "Restaura tu base de datos completa con configuración, fotos y cuotas diferidas",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )

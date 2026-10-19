@@ -24,7 +24,8 @@ import java.util.zip.ZipOutputStream
 data class ParsedBackup(
     val cards: List<CreditCardEntity>,
     val expenses: List<ExpenseEntity>,
-    val photosCount: Int
+    val photosCount: Int,
+    val preferences: Map<String, Any?> = emptyMap()
 )
 
 object BackupUtil {
@@ -34,8 +35,8 @@ object BackupUtil {
     private const val RECEIPTS_DIR_ENTRY = "receipts/"
 
     /**
-     * Exporta el respaldo completo (tarjetas, consumos con todos sus campos nuevos
-     * y los archivos de fotos de comprobantes almacenados en el dispositivo)
+     * Exporta el respaldo completo (tarjetas, consumos con todos sus datos,
+     * configuración completa de la app y los archivos de fotos de comprobantes)
      * en un archivo ZIP estándar.
      */
     fun exportFullBackup(
@@ -52,6 +53,22 @@ object BackupUtil {
             root.put("export_date", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
             root.put("cards_count", cards.size)
             root.put("expenses_count", expenses.size)
+
+            // Exportar configuración completa de la aplicación (SharedPreferences)
+            val prefs = context.getSharedPreferences("creditia_secure_prefs", Context.MODE_PRIVATE)
+            val prefsObj = JSONObject()
+            for ((key, value) in prefs.all) {
+                when (value) {
+                    is Boolean -> prefsObj.put(key, value)
+                    is Int -> prefsObj.put(key, value)
+                    is Long -> prefsObj.put(key, value)
+                    is Float -> prefsObj.put(key, value.toDouble())
+                    is Double -> prefsObj.put(key, value)
+                    is String -> prefsObj.put(key, value)
+                    else -> if (value != null) prefsObj.put(key, value.toString())
+                }
+            }
+            root.put("preferences", prefsObj)
 
             val cardsArray = JSONArray()
             for (c in cards) {
@@ -107,6 +124,10 @@ object BackupUtil {
                 expensesArray.put(obj)
             }
             root.put("expenses", expensesArray)
+
+            // Asegurar que todos los comprobantes locales en el directorio de la app se incluyan
+            val allDirReceipts = ReceiptStorageUtil.getReceiptsDir(context).listFiles()?.filter { it.isFile } ?: emptyList()
+            receiptsToPack.addAll(allDirReceipts)
 
             // 1. Escribir metadatos JSON
             zipOut.putNextEntry(ZipEntry(METADATA_ENTRY_NAME))
@@ -290,10 +311,21 @@ object BackupUtil {
             parsedExpenses.add(expense)
         }
 
+        val prefsObj = root.optJSONObject("preferences") ?: root.optJSONObject("config")
+        val parsedPreferences = mutableMapOf<String, Any?>()
+        if (prefsObj != null) {
+            val keys = prefsObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                parsedPreferences[key] = prefsObj.get(key)
+            }
+        }
+
         return ParsedBackup(
             cards = parsedCards,
             expenses = parsedExpenses,
-            photosCount = extractedPhotosCount
+            photosCount = extractedPhotosCount,
+            preferences = parsedPreferences
         )
     }
 }

@@ -44,6 +44,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -146,6 +148,8 @@ fun ConsumosScreen(
 
     val selectedPeriod = if (uiState.selectedPeriod.isNotBlank() && uiState.selectedPeriod in availablePeriods) {
         uiState.selectedPeriod
+    } else if (currentActivePeriod in availablePeriods) {
+        currentActivePeriod
     } else {
         availablePeriods.firstOrNull() ?: currentActivePeriod
     }
@@ -1351,7 +1355,7 @@ fun ConsumosScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "¿Deseas eliminar el registro #${target.sequenceNumber} (${target.establishment} por S/ ${String.format(Locale.US, "%.2f", target.amount)}) de la base de datos local?",
+                        text = "¿Deseas eliminar el consumo de ${target.establishment} por S/ ${String.format(Locale.US, "%.2f", target.amount)} de la base de datos local?",
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1529,8 +1533,26 @@ fun ConsumosScreen(
 
                 HorizontalDivider(color = CreditiaSurfaceContainerHigh)
 
-                // Lista de periodos seleccionables (con el periodo actual al principio)
+                // Lista de periodos seleccionables ordenados cronológicamente
+                val periodListState = rememberLazyListState()
+                val activeOrSelectedIndex = remember(availablePeriods, selectedPeriod, currentActivePeriod) {
+                    val target = if (selectedPeriod.isNotBlank() && selectedPeriod != "Todos los históricos") {
+                        selectedPeriod
+                    } else {
+                        currentActivePeriod
+                    }
+                    val idx = availablePeriods.indexOf(target)
+                    if (idx >= 0) idx else 0
+                }
+
+                LaunchedEffect(showPeriodPickerSheet) {
+                    if (showPeriodPickerSheet && activeOrSelectedIndex >= 0 && availablePeriods.isNotEmpty()) {
+                        periodListState.scrollToItem(maxOf(0, activeOrSelectedIndex))
+                    }
+                }
+
                 LazyColumn(
+                    state = periodListState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 420.dp),
@@ -1737,22 +1759,6 @@ fun ExpenseCardItem(
                         }
                     }
 
-                    // Sequence index badge
-                    Box(
-                        modifier = Modifier
-                            .size(26.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(CreditiaSurfaceContainerHigh),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "#${expense.sequenceNumber}",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
                     // Miniatura del Comprobante si existe
                     val receiptList = remember(expense.receiptUri) { expense.getReceiptUriList() }
                     if (receiptList.isNotEmpty()) {
@@ -1778,7 +1784,7 @@ fun ExpenseCardItem(
                         ) {
                             AsyncImage(
                                 model = imgModel,
-                                contentDescription = "Miniatura del comprobante #${expense.sequenceNumber}",
+                                contentDescription = "Miniatura del comprobante de ${expense.establishment}",
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
                             )

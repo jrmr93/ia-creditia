@@ -414,13 +414,13 @@ fun NuevoConsumoScreen(
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Sync,
+                                imageVector = if (editing != null) Icons.Default.Edit else Icons.Default.Receipt,
                                 contentDescription = null,
                                 tint = CreditiaPrimary,
                                 modifier = Modifier.size(15.dp)
                             )
                             Text(
-                                text = if (editing != null) "Editando Registro N° $nextSeqNumber" else "Registro Secuencial N° $nextSeqNumber",
+                                text = if (editing != null) "Editando Consumo" else "Nuevo Consumo",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -1444,7 +1444,7 @@ fun NuevoConsumoScreen(
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "¿Estás seguro de que deseas guardar las modificaciones realizadas en el registro #${editing.sequenceNumber}?",
+                            text = "¿Estás seguro de que deseas guardar las modificaciones realizadas en este consumo?",
                             fontSize = 14.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -1537,7 +1537,7 @@ fun NuevoConsumoScreen(
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "¿Deseas eliminar permanentemente el registro #${editing.sequenceNumber} (${editing.establishment} por S/ ${String.format(Locale.US, "%.2f", editing.amount)}) de la base de datos local?",
+                            text = "¿Deseas eliminar permanentemente el consumo de ${editing.establishment} por S/ ${String.format(Locale.US, "%.2f", editing.amount)} de la base de datos local?",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
