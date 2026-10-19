@@ -693,6 +693,31 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun deferExpense(
+        originalExpense: ExpenseEntity,
+        months: Int,
+        monthlyInterestRate: Double,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val card = _uiState.value.cards.find { it.id == originalExpense.cardId } ?: _uiState.value.selectedCard
+                val cutDay = card?.cutDay ?: 24
+                repository.deferExpense(
+                    originalExpense = originalExpense,
+                    months = months,
+                    monthlyInterestRate = monthlyInterestRate,
+                    cutDay = cutDay
+                )
+                showToast("✓ Consumo diferido a $months meses generado con éxito")
+                _uiState.update { it.copy(editingExpense = null) }
+                onSuccess()
+            } catch (e: Exception) {
+                showToast("Error al diferir consumo: ${e.localizedMessage}")
+            }
+        }
+    }
+
     // Helper functions for UI
     fun getFilteredExpenses(
         expenses: List<ExpenseEntity>,

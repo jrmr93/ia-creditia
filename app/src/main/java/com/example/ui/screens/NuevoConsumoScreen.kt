@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.ZoomIn
 import com.example.util.ReceiptStorageUtil
 import com.example.util.OfflineReceiptAnalyzer
 import com.example.ui.components.ReceiptViewerDialog
+import com.example.ui.components.DiferirConsumoDialog
 import java.io.File
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CameraAlt
@@ -152,6 +153,7 @@ fun NuevoConsumoScreen(
 
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showConfirmEditDialog by remember { mutableStateOf(false) }
+    var showDeferDialog by remember { mutableStateOf(false) }
 
     val calInit = remember(editing) {
         val c = Calendar.getInstance()
@@ -1299,6 +1301,34 @@ fun NuevoConsumoScreen(
 
                     if (editing != null) {
                         Button(
+                            onClick = { showDeferDialog = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("btn_defer_editing_expense"),
+                            colors = ButtonDefaults.buttonColors(containerColor = CreditiaTertiary.copy(alpha = 0.15f)),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CalendarMonth,
+                                    contentDescription = null,
+                                    tint = CreditiaTertiary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = "Diferir Consumo en Cuotas",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = CreditiaTertiary
+                                )
+                            }
+                        }
+
+                        Button(
                             onClick = { showDeleteConfirmation = true },
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1579,6 +1609,40 @@ fun NuevoConsumoScreen(
                 dismissButton = {
                     TextButton(onClick = { showNoApiKeyDialog = false }) {
                         Text("Cancelar")
+                    }
+                }
+            )
+        }
+
+        // Modal de Diferir Consumo en Cuotas
+        if (showDeferDialog && editing != null) {
+            val parsedAmount = amountString.toDoubleOrNull() ?: editing.amount
+            val currentEstablishment = establishment.ifBlank { editing.establishment }
+            val currentDescription = description.ifBlank { editing.description }
+            val currentReceipt = scannedReceiptUri ?: editing.receiptUri
+            val card = selectedCard ?: uiState.selectedCard
+            val cutDay = card?.cutDay ?: 24
+
+            DiferirConsumoDialog(
+                amount = parsedAmount,
+                establishment = currentEstablishment,
+                dateString = formattedDate,
+                cutDay = cutDay,
+                cardName = card?.cardName ?: "Tarjeta",
+                repository = viewModel.repository,
+                onDismiss = { showDeferDialog = false },
+                onConfirm = { months, monthlyInterestRate ->
+                    showDeferDialog = false
+                    val targetExpense = editing.copy(
+                        cardId = card?.id ?: editing.cardId,
+                        amount = parsedAmount,
+                        dateString = formattedDate,
+                        establishment = currentEstablishment,
+                        description = currentDescription,
+                        receiptUri = currentReceipt
+                    )
+                    viewModel.deferExpense(targetExpense, months, monthlyInterestRate) {
+                        onBack()
                     }
                 }
             )

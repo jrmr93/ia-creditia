@@ -138,4 +138,122 @@ class CreditiaRepository(
             "2026/09/25 - 2026/10/24"
         }
     }
+
+    data class InstallmentPreview(
+        val installmentNumber: Int,
+        val totalInstallments: Int,
+        val amount: Double,
+        val dateString: String,
+        val billingPeriod: String
+    )
+
+    /**
+     * Calculates the installment schedule and amounts for deferring an expense.
+     * Takes into account the monthly interest rate (TEM) using standard French amortization,
+     * the starting transaction date, and the card's cutoff day.
+     */
+    fun calculateInstallmentPlan(
+        amount: Double,
+        months: Int,
+        monthlyInterestRate: Double,
+        startDateString: String,
+        cutDay: Int
+    ): List<InstallmentPreview> {
+        val i = monthlyInterestRate / 100.0
+        val installmentAmount = if (i > 0) {
+            val factor = Math.pow(1.0 + i, months.toDouble())
+            amount * (i * factor) / (factor - 1.0)
+        } else {
+            amount / months
+        }
+
+        val previews = mutableListOf<InstallmentPreview>()
+        val cal = Calendar.getInstance()
+        val parts = startDateString.split("/")
+        if (parts.size == 3) {
+            cal.set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt())
+        }
+
+        for (k in 1..months) {
+            if (k > 1) {
+                cal.add(Calendar.MONTH, 1)
+            }
+            val dateStr = String.format(Locale.US, "%04d/%02d/%02d", cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))
+            val period = calculateBillingPeriod(dateStr, cutDay)
+            previews.add(
+                InstallmentPreview(
+                    installmentNumber = k,
+                    totalInstallments = months,
+                    amount = installmentAmount,
+                    dateString = dateStr,
+                    billingPeriod = period
+                )
+            )
+        }
+        return previews
+    }
+
+    /**
+     * Defers an existing expense into multiple monthly installments.
+     * Updates the original expense to become Installment 1, and generates
+     * subsequent installments (2..N) with consecutive sequence numbers and
+     * corresponding billing periods.
+     */
+    suspend fun deferExpense(
+        originalExpense: ExpenseEntity,
+        months: Int,
+        monthlyInterestRate: Double,
+        cutDay: Int
+    ): List<ExpenseEntity> {
+        val plan = calculateInstallmentPlan(
+            amount = originalExpense.amount,
+            months = months,
+            monthlyInterestRate = monthlyInterestRate,
+            startDateString = originalExpense.dateString,
+            cutDay = cutDay
+        )
+
+        // Clean base description (strip any previous "(Cuota X/Y)")
+        val baseDescription = originalExpense.description.replace(Regex("\\s*\\(Cuota\\s*\\d+/\\d+\\)"), "").trim()
+        val baseEstablishment = originalExpense.establishment
+
+        // 1. Update original expense as Cuota 1
+        val firstPlan = plan[0]
+        val updatedExpense1 = originalExpense.copy(
+            amount = firstPlan.amount,
+            description = if (baseDescription.isNotBlank()) "$baseDescription (Cuota 1/$months)" else "Consumo (Cuota 1/$months)",
+            billingPeriod = firstPlan.billingPeriod,
+            dateString = firstPlan.dateString
+        )
+        expenseDao.updateExpense(updatedExpense1)
+
+        val resultList = mutableListOf(updatedExpense1)
+
+        // 2. Insert installments 2..N
+        var currentSeq = getNextSequenceNumber()
+        val newExpenses = mutableListOf<ExpenseEntity>()
+
+        for (k in 2..months) {
+            val itemPlan = plan[k - 1]
+            val newExpense = ExpenseEntity(
+                sequenceNumber = currentSeq++,
+                cardId = originalExpense.cardId,
+                establishment = baseEstablishment,
+                description = if (baseDescription.isNotBlank()) "$baseDescription (Cuota $k/$months)" else "Consumo (Cuota $k/$months)",
+                amount = itemPlan.amount,
+                dateString = itemPlan.dateString,
+                billingPeriod = itemPlan.billingPeriod,
+                receiptUri = originalExpense.receiptUri,
+                timestamp = System.currentTimeMillis() + k
+            )
+            newExpenses.add(newExpense)
+            resultList.add(newExpense)
+        }
+
+        if (newExpenses.isNotEmpty()) {
+            expenseDao.insertExpenses(newExpenses)
+        }
+
+        return resultList
+    }
 }
