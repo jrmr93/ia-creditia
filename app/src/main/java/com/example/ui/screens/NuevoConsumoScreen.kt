@@ -17,6 +17,7 @@ import androidx.compose.foundation.border
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.filled.ZoomIn
 import com.example.util.ReceiptStorageUtil
+import com.example.util.OfflineReceiptAnalyzer
 import com.example.ui.components.ReceiptViewerDialog
 import java.io.File
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -207,50 +208,67 @@ fun NuevoConsumoScreen(
     }
     val scanner = remember { GmsDocumentScanning.getClient(scannerOptions) }
 
-    val scannerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartIntentSenderForResult()
-    ) { activityResult ->
-        if (activityResult.resultCode == Activity.RESULT_OK) {
-            val gmsResult = GmsDocumentScanningResult.fromActivityResultIntent(activityResult.data)
-            val imageUri = gmsResult?.pages?.firstOrNull()?.imageUri
-            if (imageUri != null) {
-                // Guarda la imagen de inmediato en la carpeta interna privada de la app
-                val savedInternalPath = ReceiptStorageUtil.saveReceiptImage(context, imageUri)
-                if (savedInternalPath != null) {
-                    if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
-                        ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
-                    }
-                    scannedReceiptUri = savedInternalPath
+    val analyzeReceiptAction: (targetUri: String, forceOffline: Boolean) -> Unit = { targetUri, forceOffline ->
+        isAnalyzingReceipt = true
+        coroutineScope.launch {
+            try {
+                val parsedUri = if (targetUri.startsWith("/")) {
+                    android.net.Uri.fromFile(File(targetUri))
+                } else if (targetUri.startsWith("file://")) {
+                    android.net.Uri.fromFile(File(targetUri.removePrefix("file://")))
                 } else {
-                    scannedReceiptUri = imageUri.toString()
+                    android.net.Uri.parse(targetUri)
                 }
 
-                isAnalyzingReceipt = true
-                coroutineScope.launch {
-                    try {
-                        val bitmap = GeminiService.loadSampledBitmapFromUri(context, imageUri)
-                        if (bitmap == null) {
-                            viewModel.showToast("No se pudo cargar la imagen del comprobante")
-                            isAnalyzingReceipt = false
-                            return@launch
+                val bitmap = GeminiService.loadSampledBitmapFromUri(context, parsedUri)
+                if (bitmap == null) {
+                    viewModel.showToast("No se pudo cargar la imagen del comprobante")
+                    isAnalyzingReceipt = false
+                    return@launch
+                }
+
+                val useCloudAi = !forceOffline && uiState.isGeminiAiEnabled && uiState.geminiApiKey.isNotBlank()
+
+                if (useCloudAi) {
+                    val result = GeminiService.analyzeReceipt(
+                        apiKey = uiState.geminiApiKey,
+                        modelName = uiState.geminiModel,
+                        bitmap = bitmap
+                    )
+                    result.onSuccess { data ->
+                        if (data.amount > 0.0) {
+                            amountString = String.format(Locale.US, "%.2f", data.amount)
                         }
-                        val result = GeminiService.analyzeReceipt(
-                            apiKey = uiState.geminiApiKey,
-                            modelName = uiState.geminiModel,
-                            bitmap = bitmap
-                        )
-                        result.onSuccess { data ->
-                            if (data.amount > 0.0) {
-                                amountString = String.format(Locale.US, "%.2f", data.amount)
+                        if (data.establishment.isNotBlank()) {
+                            establishment = data.establishment
+                        }
+                        if (data.description.isNotBlank()) {
+                            description = data.description
+                        }
+                        if (data.dateString.isNotBlank()) {
+                            val parts = data.dateString.split("/")
+                            if (parts.size == 3) {
+                                val y = parts[0].toIntOrNull()
+                                val m = parts[1].toIntOrNull()
+                                val d = parts[2].toIntOrNull()
+                                if (y != null && m != null && d != null) {
+                                    selectedYear = y
+                                    selectedMonth = m
+                                    selectedDay = d
+                                }
                             }
-                            if (data.establishment.isNotBlank()) {
-                                establishment = data.establishment
-                            }
-                            if (data.description.isNotBlank()) {
-                                description = data.description
-                            }
-                            if (data.dateString.isNotBlank()) {
-                                val parts = data.dateString.split("/")
+                        }
+                        viewModel.showToast("✓ Comprobante analizado con éxito por Gemini IA")
+                    }.onFailure { err ->
+                        // Fallback automático al analizador Offline si hay problemas de red o cuota en Gemini
+                        viewModel.showToast("Gemini IA no respondió. Analizando con OCR Offline...")
+                        val offResult = OfflineReceiptAnalyzer.analyzeReceiptOffline(bitmap)
+                        offResult.onSuccess { offData ->
+                            if (offData.amount > 0.0) amountString = String.format(Locale.US, "%.2f", offData.amount)
+                            if (offData.establishment.isNotBlank()) establishment = offData.establishment
+                            if (offData.description.isNotBlank()) description = offData.description
+                            if (offData.dateString.isNotBlank()) {
+                                val parts = offData.dateString.split("/")
                                 if (parts.size == 3) {
                                     val y = parts[0].toIntOrNull()
                                     val m = parts[1].toIntOrNull()
@@ -262,46 +280,90 @@ fun NuevoConsumoScreen(
                                     }
                                 }
                             }
-                            viewModel.showToast("✓ Comprobante analizado con éxito por Gemini")
-                        }.onFailure { err ->
-                            viewModel.showToast("Error al analizar comprobante: ${err.localizedMessage ?: err.message}")
+                            viewModel.showToast("✓ Datos extraídos de forma local (Offline)")
+                        }.onFailure { offErr ->
+                            viewModel.showToast("Error al analizar comprobante: ${offErr.localizedMessage ?: offErr.message}")
                         }
-                    } catch (e: Exception) {
-                        viewModel.showToast("Error inesperado: ${e.localizedMessage}")
-                    } finally {
-                        isAnalyzingReceipt = false
+                    }
+                } else {
+                    // Modo Offline
+                    val offResult = OfflineReceiptAnalyzer.analyzeReceiptOffline(bitmap)
+                    offResult.onSuccess { offData ->
+                        if (offData.amount > 0.0) amountString = String.format(Locale.US, "%.2f", offData.amount)
+                        if (offData.establishment.isNotBlank()) establishment = offData.establishment
+                        if (offData.description.isNotBlank()) description = offData.description
+                        if (offData.dateString.isNotBlank()) {
+                            val parts = offData.dateString.split("/")
+                            if (parts.size == 3) {
+                                val y = parts[0].toIntOrNull()
+                                val m = parts[1].toIntOrNull()
+                                val d = parts[2].toIntOrNull()
+                                if (y != null && m != null && d != null) {
+                                    selectedYear = y
+                                    selectedMonth = m
+                                    selectedDay = d
+                                }
+                            }
+                        }
+                        viewModel.showToast("✓ Comprobante analizado con éxito de forma 100% Offline")
+                    }.onFailure { offErr ->
+                        viewModel.showToast("No se pudo analizar offline: ${offErr.localizedMessage ?: offErr.message}")
                     }
                 }
+            } catch (e: Exception) {
+                viewModel.showToast("Error inesperado: ${e.localizedMessage}")
+            } finally {
+                isAnalyzingReceipt = false
+            }
+        }
+    }
+
+    val scannerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { activityResult ->
+        if (activityResult.resultCode == Activity.RESULT_OK) {
+            val gmsResult = GmsDocumentScanningResult.fromActivityResultIntent(activityResult.data)
+            val imageUri = gmsResult?.pages?.firstOrNull()?.imageUri
+            if (imageUri != null) {
+                // Guarda la imagen de inmediato en la carpeta interna privada de la app
+                val savedInternalPath = ReceiptStorageUtil.saveReceiptImage(context, imageUri)
+                val targetPath = savedInternalPath ?: imageUri.toString()
+                if (savedInternalPath != null) {
+                    if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                        ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+                    }
+                    scannedReceiptUri = savedInternalPath
+                } else {
+                    scannedReceiptUri = imageUri.toString()
+                }
+
+                analyzeReceiptAction(targetPath, false)
             }
         }
     }
 
     val launchReceiptScanner = {
-        if (uiState.geminiApiKey.isBlank()) {
-            showNoApiKeyDialog = true
+        var currentContext = context
+        var act: Activity? = null
+        while (currentContext is ContextWrapper) {
+            if (currentContext is Activity) {
+                act = currentContext
+                break
+            }
+            currentContext = currentContext.baseContext
+        }
+        if (act == null) {
+            viewModel.showToast("No se pudo iniciar el escáner de cámara")
         } else {
-            var currentContext = context
-            var act: Activity? = null
-            while (currentContext is ContextWrapper) {
-                if (currentContext is Activity) {
-                    act = currentContext
-                    break
+            scanner.getStartScanIntent(act)
+                .addOnSuccessListener { intentSender ->
+                    scannerLauncher.launch(
+                        IntentSenderRequest.Builder(intentSender).build()
+                    )
                 }
-                currentContext = currentContext.baseContext
-            }
-            if (act == null) {
-                viewModel.showToast("No se pudo iniciar el escáner de cámara")
-            } else {
-                scanner.getStartScanIntent(act)
-                    .addOnSuccessListener { intentSender ->
-                        scannerLauncher.launch(
-                            IntentSenderRequest.Builder(intentSender).build()
-                        )
-                    }
-                    .addOnFailureListener { e ->
-                        viewModel.showToast("Error al abrir escáner: ${e.localizedMessage}")
-                    }
-            }
+                .addOnFailureListener { e ->
+                    viewModel.showToast("Error al abrir escáner: ${e.localizedMessage}")
+                }
         }
     }
 
@@ -424,7 +486,7 @@ fun NuevoConsumoScreen(
                             Box(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
-                                    .background(CreditiaTertiary.copy(alpha = 0.12f))
+                                    .background(if (uiState.isGeminiAiEnabled) CreditiaTertiary.copy(alpha = 0.12f) else CreditiaPrimary.copy(alpha = 0.12f))
                                     .padding(horizontal = 8.dp, vertical = 3.dp)
                             ) {
                                 Row(
@@ -432,16 +494,16 @@ fun NuevoConsumoScreen(
                                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.AutoAwesome,
+                                        imageVector = if (uiState.isGeminiAiEnabled) Icons.Default.AutoAwesome else Icons.Default.Verified,
                                         contentDescription = null,
-                                        tint = CreditiaTertiary,
+                                        tint = if (uiState.isGeminiAiEnabled) CreditiaTertiary else CreditiaPrimary,
                                         modifier = Modifier.size(12.dp)
                                     )
                                     Text(
-                                        text = "Lectura IA Gemini",
+                                        text = if (uiState.isGeminiAiEnabled) "Lectura IA Gemini" else "OCR 100% Offline",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = CreditiaTertiary
+                                        color = if (uiState.isGeminiAiEnabled) CreditiaTertiary else CreditiaPrimary
                                     )
                                 }
                             }
@@ -465,7 +527,7 @@ fun NuevoConsumoScreen(
                                     )
                                     Column {
                                         Text(
-                                            text = "Leyendo comprobante con Gemini...",
+                                            text = if (uiState.isGeminiAiEnabled) "Leyendo comprobante con Gemini..." else "Leyendo comprobante con OCR Offline...",
                                             fontSize = 13.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = CreditiaPrimary
@@ -485,91 +547,153 @@ fun NuevoConsumoScreen(
                             } else {
                                 currentReceipt
                             }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(CreditiaSurfaceContainerLow)
-                                    .padding(10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                                     modifier = Modifier
-                                        .weight(1f)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable {
-                                            viewingReceiptUri = currentReceipt
-                                        }
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(CreditiaSurfaceContainerLow)
+                                        .padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Box(
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                                         modifier = Modifier
-                                            .size(54.dp)
+                                            .weight(1f)
                                             .clip(RoundedCornerShape(8.dp))
-                                            .background(CreditiaSurfaceContainerHigh)
-                                            .border(1.dp, CreditiaPrimary.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                viewingReceiptUri = currentReceipt
+                                            }
                                     ) {
-                                        AsyncImage(
-                                            model = imgModel,
-                                            contentDescription = "Comprobante recortado",
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
                                         Box(
                                             modifier = Modifier
-                                                .align(Alignment.BottomEnd)
-                                                .clip(RoundedCornerShape(topStart = 4.dp))
-                                                .background(Color.Black.copy(alpha = 0.65f))
-                                                .padding(2.dp)
+                                                .size(54.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(CreditiaSurfaceContainerHigh)
+                                                .border(1.dp, CreditiaPrimary.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Default.ZoomIn,
-                                                contentDescription = "Ampliar foto",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(11.dp)
+                                            AsyncImage(
+                                                model = imgModel,
+                                                contentDescription = "Comprobante recortado",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.BottomEnd)
+                                                    .clip(RoundedCornerShape(topStart = 4.dp))
+                                                    .background(Color.Black.copy(alpha = 0.65f))
+                                                    .padding(2.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.ZoomIn,
+                                                    contentDescription = "Ampliar foto",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(11.dp)
+                                                )
+                                            }
+                                        }
+                                        Column {
+                                            Text(
+                                                text = "Comprobante Guardado",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "Toca para pantalla completa y zoom",
+                                                fontSize = 11.sp,
+                                                color = CreditiaPrimary
                                             )
                                         }
                                     }
-                                    Column {
-                                        Text(
-                                            text = "Comprobante Guardado",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Text(
-                                            text = "Toca para pantalla completa y zoom",
-                                            fontSize = 11.sp,
-                                            color = CreditiaPrimary
-                                        )
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        IconButton(
+                                            onClick = { launchReceiptScanner() }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CameraAlt,
+                                                contentDescription = "Volver a escanear",
+                                                tint = CreditiaPrimary
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                                                    ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+                                                }
+                                                scannedReceiptUri = null
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Quitar foto",
+                                                tint = CreditiaError
+                                            )
+                                        }
                                     }
                                 }
 
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    IconButton(
-                                        onClick = { launchReceiptScanner() }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.CameraAlt,
-                                            contentDescription = "Volver a escanear",
-                                            tint = CreditiaPrimary
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = {
-                                            if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
-                                                ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+                                // Botones para reanalizar comprobante existente
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (uiState.isGeminiAiEnabled) {
+                                        Button(
+                                            onClick = { analyzeReceiptAction(currentReceipt, false) },
+                                            modifier = Modifier.weight(1f).height(38.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = CreditiaTertiary),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.AutoAwesome,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = "Reanalizar con IA",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
                                             }
-                                            scannedReceiptUri = null
                                         }
+                                    }
+
+                                    Button(
+                                        onClick = { analyzeReceiptAction(currentReceipt, true) },
+                                        modifier = Modifier.weight(1f).height(38.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (uiState.isGeminiAiEnabled) CreditiaSurfaceContainerHigh else CreditiaPrimary,
+                                            contentColor = if (uiState.isGeminiAiEnabled) MaterialTheme.colorScheme.onSurface else Color.White
+                                        ),
+                                        shape = RoundedCornerShape(8.dp)
                                     ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Close,
-                                            contentDescription = "Quitar foto",
-                                            tint = CreditiaError
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Sync,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = if (uiState.isGeminiAiEnabled) "Reanalizar Offline" else "Reanalizar Comprobante",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
                                 }
                             }

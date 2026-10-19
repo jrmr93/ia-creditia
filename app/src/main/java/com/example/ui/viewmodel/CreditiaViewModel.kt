@@ -75,6 +75,7 @@ data class CreditiaUiState(
     val isClearDbOpen: Boolean = false,
     val availablePeriods: List<String> = emptyList(),
     // Gemini AI Config & State
+    val isGeminiAiEnabled: Boolean = true,
     val geminiApiKey: String = "",
     val geminiModel: String = "gemini-3.5-flash",
     val geminiTestStatus: GeminiTestResult? = null,
@@ -101,6 +102,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             val biometricsEnabled = prefs.getBoolean("biometrics_enabled", true)
             val notifEnabled = prefs.getBoolean("payment_notifications_enabled", false)
             val leadDays = prefs.getInt("notification_lead_days", 3)
+            val aiEnabled = prefs.getBoolean("gemini_ai_enabled", true)
             val savedGeminiKey = prefs.getString("gemini_api_key", "") ?: ""
             val rawSavedModel = prefs.getString("gemini_model", "gemini-3.5-flash") ?: "gemini-3.5-flash"
             val legacyModels = listOf("gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash-latest", "gemini-2.0-flash-exp")
@@ -117,6 +119,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                 isVaultUnlocked = false, // Always require authentication on launch
                 isPaymentNotificationEnabled = notifEnabled,
                 notificationLeadDays = leadDays,
+                isGeminiAiEnabled = aiEnabled,
                 geminiApiKey = savedGeminiKey,
                 geminiModel = savedGeminiModel
             )
@@ -1049,6 +1052,12 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         } catch (e: Exception) {
             showToast("Error al enviar notificación: ${e.localizedMessage}")
         }
+    }
+
+    fun toggleGeminiAiEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("gemini_ai_enabled", enabled).apply()
+        _uiState.update { it.copy(isGeminiAiEnabled = enabled) }
+        showToast(if (enabled) "Inteligencia Artificial Gemini activada" else "Inteligencia Artificial desactivada (Modo Offline activo)")
     }
 
     fun saveGeminiApiKey(apiKey: String) {
