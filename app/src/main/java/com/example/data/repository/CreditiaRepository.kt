@@ -39,6 +39,8 @@ class CreditiaRepository(
 
     suspend fun updateExpense(expense: ExpenseEntity) = expenseDao.updateExpense(expense)
 
+    suspend fun getExpenseById(id: Long): ExpenseEntity? = expenseDao.getExpenseById(id)
+    suspend fun getExpensesListByCard(cardId: Long): List<ExpenseEntity> = expenseDao.getExpensesListByCard(cardId)
     suspend fun deleteExpense(expense: ExpenseEntity) = expenseDao.deleteExpense(expense)
 
     suspend fun deleteExpenseById(id: Long) = expenseDao.deleteExpenseById(id)

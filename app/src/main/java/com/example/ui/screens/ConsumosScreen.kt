@@ -13,8 +13,14 @@ import java.util.Calendar
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.material.icons.filled.ZoomIn
+import coil.compose.AsyncImage
+import com.example.ui.components.ReceiptViewerDialog
+import java.io.File
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -169,6 +175,9 @@ fun ConsumosScreen(
     var showSortMenu by remember { mutableStateOf(false) }
     var showCardDropdown by remember { mutableStateOf(false) }
     var showPeriodPickerSheet by remember { mutableStateOf(false) }
+    var viewingReceiptUri by remember { mutableStateOf<String?>(null) }
+    var viewingReceiptTitle by remember { mutableStateOf("") }
+    var viewingReceiptSubtitle by remember { mutableStateOf("") }
 
     Column(
         modifier = modifier
@@ -1084,6 +1093,11 @@ fun ConsumosScreen(
                             },
                             onDelete = {
                                 viewModel.promptDeleteExpense(expense)
+                            },
+                            onReceiptClick = { uri, title, subtitle ->
+                                viewingReceiptUri = uri
+                                viewingReceiptTitle = title
+                                viewingReceiptSubtitle = subtitle
                             }
                         )
                     }
@@ -1398,6 +1412,15 @@ fun ConsumosScreen(
             }
         }
     }
+    // Visor de Comprobante a Pantalla Completa con Zoom
+    if (viewingReceiptUri != null) {
+        ReceiptViewerDialog(
+            imageUri = viewingReceiptUri!!,
+            title = viewingReceiptTitle.ifBlank { "Comprobante de compra" },
+            subtitle = viewingReceiptSubtitle,
+            onDismiss = { viewingReceiptUri = null }
+        )
+    }
 }
 
 @Composable
@@ -1405,6 +1428,7 @@ fun ExpenseCardItem(
     expense: ExpenseEntity,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onReceiptClick: ((receiptUri: String, title: String, subtitle: String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -1446,6 +1470,52 @@ fun ExpenseCardItem(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+
+                    // Miniatura del Comprobante si existe
+                    if (!expense.receiptUri.isNullOrBlank()) {
+                        val imgModel: Any = if (expense.receiptUri.startsWith("/") || expense.receiptUri.startsWith("file://")) {
+                            File(expense.receiptUri.removePrefix("file://"))
+                        } else {
+                            expense.receiptUri
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(CreditiaSurfaceContainerHigh)
+                                .border(1.dp, CreditiaPrimary.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                .clickable {
+                                    onReceiptClick?.invoke(
+                                        expense.receiptUri,
+                                        expense.establishment,
+                                        "${expense.dateString} • $ ${String.format(Locale.US, "%.2f", expense.amount)}"
+                                    )
+                                }
+                        ) {
+                            AsyncImage(
+                                model = imgModel,
+                                contentDescription = "Miniatura del comprobante #${expense.sequenceNumber}",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            // Indicador de zoom en esquina
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .clip(RoundedCornerShape(topStart = 4.dp))
+                                    .background(Color.Black.copy(alpha = 0.65f))
+                                    .padding(2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ZoomIn,
+                                    contentDescription = "Ampliar foto",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(11.dp)
+                                )
+                            }
+                        }
+                    }
+
                     Column {
                         Text(
                             text = expense.establishment,
@@ -1508,6 +1578,13 @@ fun ExpenseCardItem(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
                                 .background(CreditiaTertiary.copy(alpha = 0.15f))
+                                .clickable {
+                                    onReceiptClick?.invoke(
+                                        expense.receiptUri,
+                                        expense.establishment,
+                                        "${expense.dateString} • $ ${String.format(Locale.US, "%.2f", expense.amount)}"
+                                    )
+                                }
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Row(
@@ -1521,7 +1598,7 @@ fun ExpenseCardItem(
                                     modifier = Modifier.size(11.dp)
                                 )
                                 Text(
-                                    text = "Ticket",
+                                    text = "Ver Ticket",
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = CreditiaTertiary

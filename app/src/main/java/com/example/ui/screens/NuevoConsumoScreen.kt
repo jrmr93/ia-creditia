@@ -12,6 +12,13 @@ import com.example.util.GeminiService
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.border
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.material.icons.filled.ZoomIn
+import com.example.util.ReceiptStorageUtil
+import com.example.ui.components.ReceiptViewerDialog
+import java.io.File
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.DocumentScanner
@@ -174,8 +181,21 @@ fun NuevoConsumoScreen(
     var showCardDropdown by remember { mutableStateOf(false) }
 
     var scannedReceiptUri by remember { mutableStateOf(editing?.receiptUri) }
+    var viewingReceiptUri by remember { mutableStateOf<String?>(null) }
     var isAnalyzingReceipt by remember { mutableStateOf(false) }
     var showNoApiKeyDialog by remember { mutableStateOf(false) }
+
+    BackHandler {
+        if (viewingReceiptUri != null) {
+            viewingReceiptUri = null
+        } else {
+            if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+            }
+            viewModel.clearEditingExpense()
+            onBack()
+        }
+    }
 
     val scannerOptions = remember {
         GmsDocumentScannerOptions.Builder()
@@ -194,7 +214,17 @@ fun NuevoConsumoScreen(
             val gmsResult = GmsDocumentScanningResult.fromActivityResultIntent(activityResult.data)
             val imageUri = gmsResult?.pages?.firstOrNull()?.imageUri
             if (imageUri != null) {
-                scannedReceiptUri = imageUri.toString()
+                // Guarda la imagen de inmediato en la carpeta interna privada de la app
+                val savedInternalPath = ReceiptStorageUtil.saveReceiptImage(context, imageUri)
+                if (savedInternalPath != null) {
+                    if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                        ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+                    }
+                    scannedReceiptUri = savedInternalPath
+                } else {
+                    scannedReceiptUri = imageUri.toString()
+                }
+
                 isAnalyzingReceipt = true
                 coroutineScope.launch {
                     try {
@@ -449,6 +479,12 @@ fun NuevoConsumoScreen(
                                 }
                             }
                         } else if (scannedReceiptUri != null) {
+                            val currentReceipt = scannedReceiptUri!!
+                            val imgModel: Any = if (currentReceipt.startsWith("/") || currentReceipt.startsWith("file://")) {
+                                File(currentReceipt.removePrefix("file://"))
+                            } else {
+                                currentReceipt
+                            }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -461,27 +497,52 @@ fun NuevoConsumoScreen(
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                    modifier = Modifier.weight(1f)
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            viewingReceiptUri = currentReceipt
+                                        }
                                 ) {
-                                    AsyncImage(
-                                        model = scannedReceiptUri,
-                                        contentDescription = "Comprobante recortado",
+                                    Box(
                                         modifier = Modifier
-                                            .size(52.dp)
+                                            .size(54.dp)
                                             .clip(RoundedCornerShape(8.dp))
                                             .background(CreditiaSurfaceContainerHigh)
-                                    )
+                                            .border(1.dp, CreditiaPrimary.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                    ) {
+                                        AsyncImage(
+                                            model = imgModel,
+                                            contentDescription = "Comprobante recortado",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomEnd)
+                                                .clip(RoundedCornerShape(topStart = 4.dp))
+                                                .background(Color.Black.copy(alpha = 0.65f))
+                                                .padding(2.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.ZoomIn,
+                                                contentDescription = "Ampliar foto",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(11.dp)
+                                            )
+                                        }
+                                    }
                                     Column {
                                         Text(
-                                            text = "Comprobante Recortado",
+                                            text = "Comprobante Guardado",
                                             fontSize = 13.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = "Autoajustado al tamaño real",
+                                            text = "Toca para pantalla completa y zoom",
                                             fontSize = 11.sp,
-                                            color = CreditiaTertiary
+                                            color = CreditiaPrimary
                                         )
                                     }
                                 }
@@ -497,7 +558,12 @@ fun NuevoConsumoScreen(
                                         )
                                     }
                                     IconButton(
-                                        onClick = { scannedReceiptUri = null }
+                                        onClick = {
+                                            if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                                                ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+                                            }
+                                            scannedReceiptUri = null
+                                        }
                                     ) {
                                         Icon(
                                             imageVector = Icons.Default.Close,
@@ -1139,6 +1205,9 @@ fun NuevoConsumoScreen(
 
                     Button(
                         onClick = {
+                            if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                                ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+                            }
                             viewModel.clearEditingExpense()
                             onBack()
                         },
@@ -1388,6 +1457,16 @@ fun NuevoConsumoScreen(
                         Text("Cancelar")
                     }
                 }
+            )
+        }
+
+        // Visor a Pantalla Completa con Zoom para comprobante en edición/nuevo
+        if (viewingReceiptUri != null) {
+            ReceiptViewerDialog(
+                imageUri = viewingReceiptUri!!,
+                title = establishment.ifBlank { "Comprobante de compra" },
+                subtitle = "Toca dos veces o pellizca para hacer zoom",
+                onDismiss = { viewingReceiptUri = null }
             )
         }
     }

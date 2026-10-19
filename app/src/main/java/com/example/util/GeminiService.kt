@@ -339,8 +339,18 @@ object GeminiService {
 
     fun loadSampledBitmapFromUri(context: Context, uri: Uri, maxDimension: Int = 1600): Bitmap? {
         return try {
+            val openStream: () -> java.io.InputStream? = {
+                if (uri.scheme == "file" || uri.scheme == null) {
+                    val path = uri.path ?: uri.toString()
+                    val f = java.io.File(path)
+                    if (f.exists()) java.io.FileInputStream(f) else context.contentResolver.openInputStream(uri)
+                } else {
+                    context.contentResolver.openInputStream(uri)
+                }
+            }
+
             val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { stream ->
+            openStream()?.use { stream ->
                 BitmapFactory.decodeStream(stream, null, options)
             }
 
@@ -357,7 +367,7 @@ object GeminiService {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             }
 
-            context.contentResolver.openInputStream(uri)?.use { stream ->
+            openStream()?.use { stream ->
                 BitmapFactory.decodeStream(stream, null, decodeOptions)
             }
         } catch (e: Exception) {

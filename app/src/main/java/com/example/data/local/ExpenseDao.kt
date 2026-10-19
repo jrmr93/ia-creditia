@@ -20,6 +20,9 @@ interface ExpenseDao {
     @Query("SELECT * FROM expenses WHERE id = :id LIMIT 1")
     suspend fun getExpenseById(id: Long): ExpenseEntity?
 
+    @Query("SELECT * FROM expenses WHERE cardId = :cardId")
+    suspend fun getExpensesListByCard(cardId: Long): List<ExpenseEntity>
+
     @Query("SELECT MAX(sequenceNumber) FROM expenses")
     suspend fun getMaxSequenceNumber(): Int?
 

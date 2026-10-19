@@ -18,6 +18,7 @@ import com.example.util.NotificationScheduler
 import com.example.util.PaymentAlertSchedule
 import com.example.util.GeminiService
 import com.example.util.GeminiTestResult
+import com.example.util.ReceiptStorageUtil
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
@@ -226,6 +227,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     fun confirmDeleteExpense() {
         val target = _uiState.value.expenseToDelete ?: return
         viewModelScope.launch {
+            ReceiptStorageUtil.deleteReceiptFile(target.receiptUri)
             repository.deleteExpenseById(target.id)
             _uiState.update { it.copy(expenseToDelete = null) }
             showToast("Consumo eliminado correctamente")
@@ -234,6 +236,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
 
     fun deleteExpenseDirectly(expenseId: Long) {
         viewModelScope.launch {
+            val target = repository.getExpenseById(expenseId)
+            ReceiptStorageUtil.deleteReceiptFile(target?.receiptUri)
             repository.deleteExpenseById(expenseId)
             _uiState.update { it.copy(expenseToDelete = null, editingExpense = null) }
             showToast("Consumo eliminado correctamente")
@@ -253,6 +257,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         val app = getApplication<Application>()
         NotificationScheduler.cancelCardPaymentAlarm(app, target.id)
         viewModelScope.launch {
+            val cardExpenses = repository.getExpensesListByCard(target.id)
+            ReceiptStorageUtil.deleteReceiptsForExpenses(cardExpenses)
             repository.deleteCardById(target.id)
             _uiState.update { current ->
                 val remaining = current.cards.filter { it.id != target.id }
@@ -445,10 +451,12 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun confirmClearDb() {
+        val app = getApplication<Application>()
         viewModelScope.launch {
+            ReceiptStorageUtil.deleteAllReceiptFiles(app)
             repository.clearAllData()
             _uiState.update { it.copy(isClearDbOpen = false, selectedCard = null, cards = emptyList()) }
-            showToast("Base SQLite purgada completamente (tarjetas y consumos)")
+            showToast("Base SQLite purgada completamente (tarjetas, consumos y fotos)")
         }
     }
 
@@ -526,6 +534,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         val cardsArray = root.optJSONArray("cards") ?: JSONArray()
         val expensesArray = root.optJSONArray("expenses") ?: JSONArray()
 
+        val app = getApplication<Application>()
+        ReceiptStorageUtil.deleteAllReceiptFiles(app)
         repository.clearAllData()
 
         val idMapping = mutableMapOf<Long, Long>()
@@ -642,6 +652,9 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
 
             if (id != null && id > 0) {
                 val existing = _uiState.value.editingExpense
+                if (existing?.receiptUri != null && existing.receiptUri != receiptUri) {
+                    ReceiptStorageUtil.deleteReceiptFile(existing.receiptUri)
+                }
                 val seq = existing?.sequenceNumber ?: repository.getNextSequenceNumber()
                 val updated = ExpenseEntity(
                     id = id,
