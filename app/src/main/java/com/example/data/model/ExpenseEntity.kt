@@ -14,5 +14,6 @@ data class ExpenseEntity(
     val amount: Double,
     val dateString: String, // "YYYY/MM/DD"
     val billingPeriod: String, // "Octubre 2026", "Noviembre 2026", etc.
+    val receiptUri: String? = null,
     val timestamp: Long = System.currentTimeMillis()
 )

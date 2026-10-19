@@ -16,6 +16,8 @@ import android.content.Intent
 import com.example.receiver.PaymentReminderReceiver
 import com.example.util.NotificationScheduler
 import com.example.util.PaymentAlertSchedule
+import com.example.util.GeminiService
+import com.example.util.GeminiTestResult
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
@@ -70,7 +72,15 @@ data class CreditiaUiState(
     val isAddCardOpen: Boolean = false,
     val isChangePinOpen: Boolean = false,
     val isClearDbOpen: Boolean = false,
-    val availablePeriods: List<String> = emptyList()
+    val availablePeriods: List<String> = emptyList(),
+    // Gemini AI Config & State
+    val geminiApiKey: String = "",
+    val geminiModel: String = "gemini-3.5-flash",
+    val geminiTestStatus: GeminiTestResult? = null,
+    val isTestingGemini: Boolean = false,
+    val isAnalyzingReceipt: Boolean = false,
+    val availableModelOptions: List<String> = emptyList(),
+    val isDetectingModels: Boolean = false
 )
 
 class CreditiaViewModel(application: Application) : AndroidViewModel(application) {
@@ -90,13 +100,24 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             val biometricsEnabled = prefs.getBoolean("biometrics_enabled", true)
             val notifEnabled = prefs.getBoolean("payment_notifications_enabled", false)
             val leadDays = prefs.getInt("notification_lead_days", 3)
+            val savedGeminiKey = prefs.getString("gemini_api_key", "") ?: ""
+            val rawSavedModel = prefs.getString("gemini_model", "gemini-3.5-flash") ?: "gemini-3.5-flash"
+            val legacyModels = listOf("gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash-latest", "gemini-2.0-flash-exp")
+            val savedGeminiModel = if (rawSavedModel in legacyModels) {
+                prefs.edit().putString("gemini_model", "gemini-3.5-flash").apply()
+                "gemini-3.5-flash"
+            } else {
+                rawSavedModel
+            }
             CreditiaUiState(
                 isBiometricsActive = biometricsEnabled,
                 masterPin = savedPin,
                 isFirstLaunch = isFirst,
                 isVaultUnlocked = false, // Always require authentication on launch
                 isPaymentNotificationEnabled = notifEnabled,
-                notificationLeadDays = leadDays
+                notificationLeadDays = leadDays,
+                geminiApiKey = savedGeminiKey,
+                geminiModel = savedGeminiModel
             )
         }
     )
@@ -611,7 +632,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         amount: Double,
         establishment: String,
         description: String,
-        dateString: String
+        dateString: String,
+        receiptUri: String? = null
     ) {
         viewModelScope.launch {
             val card = _uiState.value.cards.find { it.id == cardId } ?: _uiState.value.selectedCard
@@ -630,6 +652,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                     amount = amount,
                     dateString = dateString,
                     billingPeriod = billingPeriod,
+                    receiptUri = receiptUri ?: existing?.receiptUri,
                     timestamp = existing?.timestamp ?: System.currentTimeMillis()
                 )
                 repository.updateExpense(updated)
@@ -644,6 +667,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                     amount = amount,
                     dateString = dateString,
                     billingPeriod = billingPeriod,
+                    receiptUri = receiptUri,
                     timestamp = System.currentTimeMillis()
                 )
                 repository.insertExpense(newExpense)
@@ -1012,5 +1036,67 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         } catch (e: Exception) {
             showToast("Error al enviar notificación: ${e.localizedMessage}")
         }
+    }
+
+    fun saveGeminiApiKey(apiKey: String) {
+        prefs.edit().putString("gemini_api_key", apiKey.trim()).apply()
+        _uiState.update { it.copy(geminiApiKey = apiKey.trim(), geminiTestStatus = null) }
+        showToast("Clave de Gemini guardada")
+    }
+
+    fun saveGeminiModel(model: String) {
+        prefs.edit().putString("gemini_model", model).apply()
+        _uiState.update { it.copy(geminiModel = model, geminiTestStatus = null) }
+    }
+
+    fun testGeminiConnection() {
+        val key = _uiState.value.geminiApiKey
+        val model = _uiState.value.geminiModel
+        if (key.isBlank()) {
+            _uiState.update { it.copy(geminiTestStatus = GeminiTestResult.Error("Ingresa una API Key primero.")) }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isTestingGemini = true, geminiTestStatus = null) }
+            val result = GeminiService.testConnection(key, model)
+            _uiState.update { it.copy(isTestingGemini = false, geminiTestStatus = result) }
+        }
+    }
+
+    fun detectAvailableModels() {
+        val key = _uiState.value.geminiApiKey.trim()
+        if (key.isBlank()) {
+            showToast("Ingresa y guarda tu API Key de Gemini primero")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isDetectingModels = true) }
+            val result = GeminiService.fetchAvailableModels(key)
+            result.onSuccess { models ->
+                _uiState.update { it.copy(isDetectingModels = false, availableModelOptions = models) }
+                if (models.isNotEmpty()) {
+                    showToast("✓ Se detectaron ${models.size} modelos disponibles para tu cuenta")
+                    val currentModel = _uiState.value.geminiModel
+                    if (!models.contains(currentModel)) {
+                        val suggested = models.firstOrNull { it.contains("flash") } ?: models.first()
+                        saveGeminiModel(suggested)
+                        showToast("Modelo ajustado automáticamente a: $suggested")
+                    }
+                } else {
+                    showToast("No se encontraron modelos con soporte generateContent")
+                }
+            }.onFailure { e ->
+                _uiState.update { it.copy(isDetectingModels = false) }
+                showToast("Error al detectar modelos: ${e.localizedMessage ?: e.message}")
+            }
+        }
+    }
+
+    fun clearGeminiTestStatus() {
+        _uiState.update { it.copy(geminiTestStatus = null) }
+    }
+
+    fun setAnalyzingReceipt(isAnalyzing: Boolean) {
+        _uiState.update { it.copy(isAnalyzingReceipt = isAnalyzing) }
     }
 }
