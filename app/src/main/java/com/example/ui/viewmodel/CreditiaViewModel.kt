@@ -16,6 +16,9 @@ import android.content.Intent
 import com.example.receiver.PaymentReminderReceiver
 import com.example.util.NotificationScheduler
 import com.example.util.PaymentAlertSchedule
+import com.example.util.GeminiService
+import com.example.util.GeminiTestResult
+import com.example.util.ReceiptStorageUtil
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
@@ -36,11 +39,11 @@ import java.text.SimpleDateFormat
 import org.json.JSONObject
 import org.json.JSONArray
 
-enum class SortOrder(val displayName: String) {
-    DATE_DESC("Fecha (más reciente)"),
-    DATE_ASC("Fecha (más antigua)"),
-    AMOUNT_DESC("Monto (mayor a menor)"),
-    AMOUNT_ASC("Monto (menor a mayor)")
+enum class SortOrder(val displayName: String, val shortLabel: String) {
+    DATE_DESC("Fecha (más reciente)", "🕒 Más reciente"),
+    DATE_ASC("Fecha (más antigua)", "📅 Más antiguo"),
+    AMOUNT_DESC("Monto (mayor a menor)", "▲ Mayor monto"),
+    AMOUNT_ASC("Monto (menor a mayor)", "▼ Menor monto")
 }
 
 data class CreditiaUiState(
@@ -61,6 +64,9 @@ data class CreditiaUiState(
     val toastMessage: String? = null,
     val isPaymentNotificationEnabled: Boolean = false,
     val notificationLeadDays: Int = 3,
+    // Selection state for multi-defer
+    val isSelectionMode: Boolean = false,
+    val selectedExpenseIds: Set<Long> = emptySet(),
     // Modals
     val expenseToDelete: ExpenseEntity? = null,
     val cardToDelete: CreditCardEntity? = null,
@@ -70,7 +76,16 @@ data class CreditiaUiState(
     val isAddCardOpen: Boolean = false,
     val isChangePinOpen: Boolean = false,
     val isClearDbOpen: Boolean = false,
-    val availablePeriods: List<String> = emptyList()
+    val availablePeriods: List<String> = emptyList(),
+    // Gemini AI Config & State
+    val isGeminiAiEnabled: Boolean = true,
+    val geminiApiKey: String = "",
+    val geminiModel: String = "gemini-3.5-flash",
+    val geminiTestStatus: GeminiTestResult? = null,
+    val isTestingGemini: Boolean = false,
+    val isAnalyzingReceipt: Boolean = false,
+    val availableModelOptions: List<String> = emptyList(),
+    val isDetectingModels: Boolean = false
 )
 
 class CreditiaViewModel(application: Application) : AndroidViewModel(application) {
@@ -90,13 +105,26 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             val biometricsEnabled = prefs.getBoolean("biometrics_enabled", true)
             val notifEnabled = prefs.getBoolean("payment_notifications_enabled", false)
             val leadDays = prefs.getInt("notification_lead_days", 3)
+            val aiEnabled = prefs.getBoolean("gemini_ai_enabled", true)
+            val savedGeminiKey = prefs.getString("gemini_api_key", "") ?: ""
+            val rawSavedModel = prefs.getString("gemini_model", "gemini-3.5-flash") ?: "gemini-3.5-flash"
+            val legacyModels = listOf("gemini-1.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash-latest", "gemini-2.0-flash-exp")
+            val savedGeminiModel = if (rawSavedModel in legacyModels) {
+                prefs.edit().putString("gemini_model", "gemini-3.5-flash").apply()
+                "gemini-3.5-flash"
+            } else {
+                rawSavedModel
+            }
             CreditiaUiState(
                 isBiometricsActive = biometricsEnabled,
                 masterPin = savedPin,
                 isFirstLaunch = isFirst,
                 isVaultUnlocked = false, // Always require authentication on launch
                 isPaymentNotificationEnabled = notifEnabled,
-                notificationLeadDays = leadDays
+                notificationLeadDays = leadDays,
+                isGeminiAiEnabled = aiEnabled,
+                geminiApiKey = savedGeminiKey,
+                geminiModel = savedGeminiModel
             )
         }
     )
@@ -205,17 +233,25 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     fun confirmDeleteExpense() {
         val target = _uiState.value.expenseToDelete ?: return
         viewModelScope.launch {
-            repository.deleteExpenseById(target.id)
+            val count = repository.deleteExpenseWithCascade(target)
             _uiState.update { it.copy(expenseToDelete = null) }
-            showToast("Consumo eliminado correctamente")
+            if (count > 1) {
+                showToast("✓ Se eliminaron las $count cuotas del consumo diferido de todos los periodos")
+            } else {
+                showToast("Consumo eliminado correctamente")
+            }
         }
     }
 
     fun deleteExpenseDirectly(expenseId: Long) {
         viewModelScope.launch {
-            repository.deleteExpenseById(expenseId)
+            val count = repository.deleteExpenseByIdCascade(expenseId)
             _uiState.update { it.copy(expenseToDelete = null, editingExpense = null) }
-            showToast("Consumo eliminado correctamente")
+            if (count > 1) {
+                showToast("✓ Se eliminaron las $count cuotas del consumo diferido de todos los periodos")
+            } else {
+                showToast("Consumo eliminado correctamente")
+            }
         }
     }
 
@@ -232,6 +268,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         val app = getApplication<Application>()
         NotificationScheduler.cancelCardPaymentAlarm(app, target.id)
         viewModelScope.launch {
+            val cardExpenses = repository.getExpensesListByCard(target.id)
+            ReceiptStorageUtil.deleteReceiptsForExpenses(cardExpenses)
             repository.deleteCardById(target.id)
             _uiState.update { current ->
                 val remaining = current.cards.filter { it.id != target.id }
@@ -423,11 +461,55 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(isClearDbOpen = false) }
     }
 
+    fun toggleSelectionMode(enabled: Boolean) {
+        _uiState.update { it.copy(isSelectionMode = enabled, selectedExpenseIds = if (!enabled) emptySet() else it.selectedExpenseIds) }
+    }
+
+    fun toggleExpenseSelection(expenseId: Long) {
+        _uiState.update { current ->
+            val newSet = if (expenseId in current.selectedExpenseIds) {
+                current.selectedExpenseIds - expenseId
+            } else {
+                current.selectedExpenseIds + expenseId
+            }
+            current.copy(
+                selectedExpenseIds = newSet,
+                isSelectionMode = newSet.isNotEmpty()
+            )
+        }
+    }
+
+    fun selectAllExpenses(expenseIds: Set<Long>) {
+        _uiState.update { it.copy(selectedExpenseIds = expenseIds, isSelectionMode = expenseIds.isNotEmpty()) }
+    }
+
+    fun clearExpenseSelection() {
+        _uiState.update { it.copy(selectedExpenseIds = emptySet(), isSelectionMode = false) }
+    }
+
     fun confirmClearDb() {
+        val app = getApplication<Application>()
+        cancelPaymentAlarm()
         viewModelScope.launch {
+            ReceiptStorageUtil.deleteAllReceiptFiles(app)
             repository.clearAllData()
-            _uiState.update { it.copy(isClearDbOpen = false, selectedCard = null, cards = emptyList()) }
-            showToast("Base SQLite purgada completamente (tarjetas y consumos)")
+            _uiState.update {
+                it.copy(
+                    isClearDbOpen = false,
+                    selectedCard = null,
+                    cards = emptyList(),
+                    editingExpense = null,
+                    expenseToDelete = null,
+                    cardToDelete = null,
+                    searchQuery = "",
+                    isSearchActive = false,
+                    selectedExactDate = null,
+                    selectedPeriod = "",
+                    isSelectionMode = false,
+                    selectedExpenseIds = emptySet()
+                )
+            }
+            showToast("✓ Base de datos purgada completamente (tarjetas, consumos, diferidos y fotos)")
         }
     }
 
@@ -454,12 +536,76 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         return true
     }
 
+    /**
+     * Exporta el respaldo completo (tarjetas, consumos con todos sus datos y fotos de comprobantes)
+     * en un archivo ZIP al OutputStream proporcionado.
+     */
+    fun exportFullBackup(outputStream: java.io.OutputStream) {
+        val cards = _uiState.value.cards
+        val expenses = allExpenses.value
+        val app = getApplication<Application>()
+        com.example.util.BackupUtil.exportFullBackup(app, cards, expenses, outputStream)
+    }
+
+    /**
+     * Restaura un respaldo completo desde el InputStream (acepta archivo ZIP con fotos o JSON legacy).
+     */
+    suspend fun restoreFullBackup(inputStream: java.io.InputStream): Triple<Int, Int, Int> {
+        val app = getApplication<Application>()
+
+        cancelPaymentAlarm()
+        ReceiptStorageUtil.deleteAllReceiptFiles(app)
+        repository.clearAllData()
+
+        val parsed = com.example.util.BackupUtil.parseBackup(app, inputStream)
+
+        val idMapping = mutableMapOf<Long, Long>()
+        var restoredCards = 0
+        var restoredExpenses = 0
+
+        for (card in parsed.cards) {
+            val oldId = card.id
+            val newCard = card.copy(id = 0L)
+            val newId = repository.insertCard(newCard)
+            idMapping[oldId] = newId
+            restoredCards++
+        }
+
+        for (expense in parsed.expenses) {
+            val oldCardId = expense.cardId
+            val targetCardId = idMapping[oldCardId] ?: idMapping.values.firstOrNull() ?: 1L
+            val newExpense = expense.copy(
+                id = 0L,
+                cardId = targetCardId
+            )
+            repository.insertExpense(newExpense)
+            restoredExpenses++
+        }
+
+        val allCardsList = repository.getAllCardsList()
+        val firstCard = allCardsList.firstOrNull()
+        _uiState.update { current ->
+            current.copy(
+                cards = allCardsList,
+                selectedCard = firstCard,
+                currentTab = "consumos",
+                isSearchActive = false,
+                searchQuery = "",
+                selectedExpenseIds = emptySet(),
+                isSelectionMode = false
+            )
+        }
+        val photoMsg = if (parsed.photosCount > 0) " y ${parsed.photosCount} fotos" else ""
+        showToast("✓ Respaldo restaurado: $restoredCards tarjetas, $restoredExpenses consumos$photoMsg")
+        return Triple(restoredCards, restoredExpenses, parsed.photosCount)
+    }
+
     fun exportDatabaseJson(): String {
         val cards = _uiState.value.cards
         val expenses = allExpenses.value
         val json = JSONObject()
         json.put("app", "Creditia")
-        json.put("version", 1)
+        json.put("version", 2)
         json.put("export_date", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
         json.put("cards_count", cards.size)
         json.put("expenses_count", expenses.size)
@@ -475,6 +621,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             obj.put("last4", c.last4)
             obj.put("cutDay", c.cutDay)
             obj.put("payDay", c.payDay)
+            obj.put("payBusinessDays", c.payBusinessDays)
             obj.put("cardColorTheme", c.cardColorTheme)
             obj.put("creditLimit", c.creditLimit)
             obj.put("isDefault", c.isDefault)
@@ -493,6 +640,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             obj.put("description", e.description)
             obj.put("dateString", e.dateString)
             obj.put("billingPeriod", e.billingPeriod)
+            obj.put("deferredGroupId", e.deferredGroupId ?: "")
+            obj.put("receiptUri", e.receiptUri ?: "")
             obj.put("timestamp", e.timestamp)
             expensesArray.put(obj)
         }
@@ -501,67 +650,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     }
 
     suspend fun restoreDatabaseFromJson(jsonContent: String): Pair<Int, Int> {
-        val root = JSONObject(jsonContent)
-        val cardsArray = root.optJSONArray("cards") ?: JSONArray()
-        val expensesArray = root.optJSONArray("expenses") ?: JSONArray()
-
-        repository.clearAllData()
-
-        val idMapping = mutableMapOf<Long, Long>()
-        var restoredCards = 0
-        var restoredExpenses = 0
-
-        for (i in 0 until cardsArray.length()) {
-            val obj = cardsArray.getJSONObject(i)
-            val oldId = obj.optLong("id", 0L)
-            val card = CreditCardEntity(
-                bankName = obj.optString("bankName", "BANCO"),
-                cardName = obj.optString("cardName", "TARJETA"),
-                network = obj.optString("network", "VISA"),
-                tier = obj.optString("tier", "CLASSIC"),
-                last4 = obj.optString("last4", "0000"),
-                cutDay = obj.optInt("cutDay", 24),
-                payDay = obj.optInt("payDay", 14),
-                cardColorTheme = obj.optString("cardColorTheme", "blue"),
-                creditLimit = obj.optDouble("creditLimit", 4000.0),
-                isDefault = obj.optBoolean("isDefault", false)
-            )
-            val newId = repository.insertCard(card)
-            idMapping[oldId] = newId
-            restoredCards++
-        }
-
-        for (i in 0 until expensesArray.length()) {
-            val obj = expensesArray.getJSONObject(i)
-            val oldCardId = obj.optLong("cardId", 0L)
-            val targetCardId = idMapping[oldCardId] ?: idMapping.values.firstOrNull() ?: 1L
-            val expense = ExpenseEntity(
-                cardId = targetCardId,
-                sequenceNumber = obj.optInt("sequenceNumber", i + 1),
-                amount = obj.optDouble("amount", 0.0),
-                establishment = obj.optString("establishment", "Comercio"),
-                description = obj.optString("description", "Consumo"),
-                dateString = obj.optString("dateString", "2026/10/01"),
-                billingPeriod = obj.optString("billingPeriod", "Octubre 2026"),
-                timestamp = obj.optLong("timestamp", System.currentTimeMillis())
-            )
-            repository.insertExpense(expense)
-            restoredExpenses++
-        }
-
-        val allCardsList = repository.getAllCardsList()
-        val firstCard = allCardsList.firstOrNull()
-        _uiState.update { current ->
-            current.copy(
-                cards = allCardsList,
-                selectedCard = firstCard,
-                currentTab = "consumos",
-                isSearchActive = false,
-                searchQuery = ""
-            )
-        }
-        showToast("✓ Restauración completada: $restoredCards tarjetas y $restoredExpenses consumos")
-        return Pair(restoredCards, restoredExpenses)
+        val triple = restoreFullBackup(jsonContent.byteInputStream(Charsets.UTF_8))
+        return Pair(triple.first, triple.second)
     }
 
     fun setPinSetupMode(setup: Boolean) {
@@ -611,7 +701,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         amount: Double,
         establishment: String,
         description: String,
-        dateString: String
+        dateString: String,
+        receiptUri: String? = null
     ) {
         viewModelScope.launch {
             val card = _uiState.value.cards.find { it.id == cardId } ?: _uiState.value.selectedCard
@@ -620,6 +711,9 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
 
             if (id != null && id > 0) {
                 val existing = _uiState.value.editingExpense
+                if (existing?.receiptUri != null && existing.receiptUri != receiptUri) {
+                    ReceiptStorageUtil.deleteReceiptFile(existing.receiptUri)
+                }
                 val seq = existing?.sequenceNumber ?: repository.getNextSequenceNumber()
                 val updated = ExpenseEntity(
                     id = id,
@@ -630,6 +724,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                     amount = amount,
                     dateString = dateString,
                     billingPeriod = billingPeriod,
+                    receiptUri = receiptUri ?: existing?.receiptUri,
                     timestamp = existing?.timestamp ?: System.currentTimeMillis()
                 )
                 repository.updateExpense(updated)
@@ -644,12 +739,63 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                     amount = amount,
                     dateString = dateString,
                     billingPeriod = billingPeriod,
+                    receiptUri = receiptUri,
                     timestamp = System.currentTimeMillis()
                 )
                 repository.insertExpense(newExpense)
                 showToast("¡Consumo N° $nextSeq Registrado!")
             }
             _uiState.update { it.copy(editingExpense = null) }
+        }
+    }
+
+    fun deferExpense(
+        originalExpense: ExpenseEntity,
+        months: Int,
+        monthlyInterestRate: Double,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val card = _uiState.value.cards.find { it.id == originalExpense.cardId } ?: _uiState.value.selectedCard
+                val cutDay = card?.cutDay ?: 24
+                repository.deferExpense(
+                    originalExpense = originalExpense,
+                    months = months,
+                    monthlyInterestRate = monthlyInterestRate,
+                    cutDay = cutDay
+                )
+                showToast("✓ Consumo diferido a $months meses generado con éxito")
+                _uiState.update { it.copy(editingExpense = null) }
+                onSuccess()
+            } catch (e: Exception) {
+                showToast("Error al diferir consumo: ${e.localizedMessage}")
+            }
+        }
+    }
+
+    fun deferMultipleExpenses(
+        selectedExpenses: List<ExpenseEntity>,
+        months: Int,
+        monthlyInterestRate: Double,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                if (selectedExpenses.isEmpty()) return@launch
+                val card = _uiState.value.cards.find { it.id == selectedExpenses.first().cardId } ?: _uiState.value.selectedCard
+                val cutDay = card?.cutDay ?: 24
+                repository.deferMultipleExpenses(
+                    selectedExpenses = selectedExpenses,
+                    months = months,
+                    monthlyInterestRate = monthlyInterestRate,
+                    cutDay = cutDay
+                )
+                showToast("✓ ${selectedExpenses.size} consumos consolidados en $months cuotas con éxito")
+                onSuccess()
+            } catch (e: Exception) {
+                showToast("Error al diferir consumos: ${e.localizedMessage}")
+            }
         }
     }
 
@@ -1012,5 +1158,73 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         } catch (e: Exception) {
             showToast("Error al enviar notificación: ${e.localizedMessage}")
         }
+    }
+
+    fun toggleGeminiAiEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean("gemini_ai_enabled", enabled).apply()
+        _uiState.update { it.copy(isGeminiAiEnabled = enabled) }
+        showToast(if (enabled) "Inteligencia Artificial Gemini activada" else "Inteligencia Artificial desactivada (Modo Offline activo)")
+    }
+
+    fun saveGeminiApiKey(apiKey: String) {
+        prefs.edit().putString("gemini_api_key", apiKey.trim()).apply()
+        _uiState.update { it.copy(geminiApiKey = apiKey.trim(), geminiTestStatus = null) }
+        showToast("Clave de Gemini guardada")
+    }
+
+    fun saveGeminiModel(model: String) {
+        prefs.edit().putString("gemini_model", model).apply()
+        _uiState.update { it.copy(geminiModel = model, geminiTestStatus = null) }
+    }
+
+    fun testGeminiConnection() {
+        val key = _uiState.value.geminiApiKey
+        val model = _uiState.value.geminiModel
+        if (key.isBlank()) {
+            _uiState.update { it.copy(geminiTestStatus = GeminiTestResult.Error("Ingresa una API Key primero.")) }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isTestingGemini = true, geminiTestStatus = null) }
+            val result = GeminiService.testConnection(key, model)
+            _uiState.update { it.copy(isTestingGemini = false, geminiTestStatus = result) }
+        }
+    }
+
+    fun detectAvailableModels() {
+        val key = _uiState.value.geminiApiKey.trim()
+        if (key.isBlank()) {
+            showToast("Ingresa y guarda tu API Key de Gemini primero")
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(isDetectingModels = true) }
+            val result = GeminiService.fetchAvailableModels(key)
+            result.onSuccess { models ->
+                _uiState.update { it.copy(isDetectingModels = false, availableModelOptions = models) }
+                if (models.isNotEmpty()) {
+                    showToast("✓ Se detectaron ${models.size} modelos disponibles para tu cuenta")
+                    val currentModel = _uiState.value.geminiModel
+                    if (!models.contains(currentModel)) {
+                        val suggested = models.firstOrNull { it.contains("flash") } ?: models.first()
+                        saveGeminiModel(suggested)
+                        showToast("Modelo ajustado automáticamente a: $suggested")
+                    }
+                } else {
+                    showToast("No se encontraron modelos con soporte generateContent")
+                }
+            }.onFailure { e ->
+                _uiState.update { it.copy(isDetectingModels = false) }
+                showToast("Error al detectar modelos: ${e.localizedMessage ?: e.message}")
+            }
+        }
+    }
+
+    fun clearGeminiTestStatus() {
+        _uiState.update { it.copy(geminiTestStatus = null) }
+    }
+
+    fun setAnalyzingReceipt(isAnalyzing: Boolean) {
+        _uiState.update { it.copy(isAnalyzingReceipt = isAnalyzing) }
     }
 }

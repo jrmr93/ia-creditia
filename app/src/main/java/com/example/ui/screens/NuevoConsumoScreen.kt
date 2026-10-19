@@ -1,7 +1,31 @@
 package com.example.ui.screens
 
+import android.app.Activity
 import android.app.DatePickerDialog
+import android.content.ContextWrapper
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.platform.LocalContext
+import coil.compose.AsyncImage
+import com.example.util.GeminiService
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.border
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.material.icons.filled.ZoomIn
+import com.example.util.ReceiptStorageUtil
+import com.example.util.OfflineReceiptAnalyzer
+import com.example.ui.components.ReceiptViewerDialog
+import com.example.ui.components.DiferirConsumoDialog
+import java.io.File
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.ImeAction
@@ -129,6 +153,7 @@ fun NuevoConsumoScreen(
 
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showConfirmEditDialog by remember { mutableStateOf(false) }
+    var showDeferDialog by remember { mutableStateOf(false) }
 
     val calInit = remember(editing) {
         val c = Calendar.getInstance()
@@ -157,6 +182,192 @@ fun NuevoConsumoScreen(
     }
 
     var showCardDropdown by remember { mutableStateOf(false) }
+
+    var scannedReceiptUri by remember { mutableStateOf(editing?.receiptUri) }
+    var viewingReceiptUri by remember { mutableStateOf<String?>(null) }
+    var isAnalyzingReceipt by remember { mutableStateOf(false) }
+    var showNoApiKeyDialog by remember { mutableStateOf(false) }
+
+    BackHandler {
+        if (viewingReceiptUri != null) {
+            viewingReceiptUri = null
+        } else {
+            if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+            }
+            viewModel.clearEditingExpense()
+            onBack()
+        }
+    }
+
+    val scannerOptions = remember {
+        GmsDocumentScannerOptions.Builder()
+            .setGalleryImportAllowed(true)
+            .setPageLimit(1)
+            .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+            .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+            .build()
+    }
+    val scanner = remember { GmsDocumentScanning.getClient(scannerOptions) }
+
+    val analyzeReceiptAction: (targetUri: String, forceOffline: Boolean) -> Unit = { targetUri, forceOffline ->
+        isAnalyzingReceipt = true
+        coroutineScope.launch {
+            try {
+                val parsedUri = if (targetUri.startsWith("/")) {
+                    android.net.Uri.fromFile(File(targetUri))
+                } else if (targetUri.startsWith("file://")) {
+                    android.net.Uri.fromFile(File(targetUri.removePrefix("file://")))
+                } else {
+                    android.net.Uri.parse(targetUri)
+                }
+
+                val bitmap = GeminiService.loadSampledBitmapFromUri(context, parsedUri)
+                if (bitmap == null) {
+                    viewModel.showToast("No se pudo cargar la imagen del comprobante")
+                    isAnalyzingReceipt = false
+                    return@launch
+                }
+
+                val useCloudAi = !forceOffline && uiState.isGeminiAiEnabled && uiState.geminiApiKey.isNotBlank()
+
+                if (useCloudAi) {
+                    val result = GeminiService.analyzeReceipt(
+                        apiKey = uiState.geminiApiKey,
+                        modelName = uiState.geminiModel,
+                        bitmap = bitmap
+                    )
+                    result.onSuccess { data ->
+                        if (data.amount > 0.0) {
+                            amountString = String.format(Locale.US, "%.2f", data.amount)
+                        }
+                        if (data.establishment.isNotBlank()) {
+                            establishment = data.establishment
+                        }
+                        if (data.description.isNotBlank()) {
+                            description = data.description
+                        }
+                        if (data.dateString.isNotBlank()) {
+                            val parts = data.dateString.split("/")
+                            if (parts.size == 3) {
+                                val y = parts[0].toIntOrNull()
+                                val m = parts[1].toIntOrNull()
+                                val d = parts[2].toIntOrNull()
+                                if (y != null && m != null && d != null) {
+                                    selectedYear = y
+                                    selectedMonth = m
+                                    selectedDay = d
+                                }
+                            }
+                        }
+                        viewModel.showToast("✓ Comprobante analizado con éxito por Gemini IA")
+                    }.onFailure { err ->
+                        // Fallback automático al analizador Offline si hay problemas de red o cuota en Gemini
+                        viewModel.showToast("Gemini IA no respondió. Analizando con OCR Offline...")
+                        val offResult = OfflineReceiptAnalyzer.analyzeReceiptOffline(bitmap)
+                        offResult.onSuccess { offData ->
+                            if (offData.amount > 0.0) amountString = String.format(Locale.US, "%.2f", offData.amount)
+                            if (offData.establishment.isNotBlank()) establishment = offData.establishment
+                            if (offData.description.isNotBlank()) description = offData.description
+                            if (offData.dateString.isNotBlank()) {
+                                val parts = offData.dateString.split("/")
+                                if (parts.size == 3) {
+                                    val y = parts[0].toIntOrNull()
+                                    val m = parts[1].toIntOrNull()
+                                    val d = parts[2].toIntOrNull()
+                                    if (y != null && m != null && d != null) {
+                                        selectedYear = y
+                                        selectedMonth = m
+                                        selectedDay = d
+                                    }
+                                }
+                            }
+                            viewModel.showToast("✓ Datos extraídos de forma local (Offline)")
+                        }.onFailure { offErr ->
+                            viewModel.showToast("Error al analizar comprobante: ${offErr.localizedMessage ?: offErr.message}")
+                        }
+                    }
+                } else {
+                    // Modo Offline
+                    val offResult = OfflineReceiptAnalyzer.analyzeReceiptOffline(bitmap)
+                    offResult.onSuccess { offData ->
+                        if (offData.amount > 0.0) amountString = String.format(Locale.US, "%.2f", offData.amount)
+                        if (offData.establishment.isNotBlank()) establishment = offData.establishment
+                        if (offData.description.isNotBlank()) description = offData.description
+                        if (offData.dateString.isNotBlank()) {
+                            val parts = offData.dateString.split("/")
+                            if (parts.size == 3) {
+                                val y = parts[0].toIntOrNull()
+                                val m = parts[1].toIntOrNull()
+                                val d = parts[2].toIntOrNull()
+                                if (y != null && m != null && d != null) {
+                                    selectedYear = y
+                                    selectedMonth = m
+                                    selectedDay = d
+                                }
+                            }
+                        }
+                        viewModel.showToast("✓ Comprobante analizado con éxito de forma 100% Offline")
+                    }.onFailure { offErr ->
+                        viewModel.showToast("No se pudo analizar offline: ${offErr.localizedMessage ?: offErr.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                viewModel.showToast("Error inesperado: ${e.localizedMessage}")
+            } finally {
+                isAnalyzingReceipt = false
+            }
+        }
+    }
+
+    val scannerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { activityResult ->
+        if (activityResult.resultCode == Activity.RESULT_OK) {
+            val gmsResult = GmsDocumentScanningResult.fromActivityResultIntent(activityResult.data)
+            val imageUri = gmsResult?.pages?.firstOrNull()?.imageUri
+            if (imageUri != null) {
+                // Guarda la imagen de inmediato en la carpeta interna privada de la app
+                val savedInternalPath = ReceiptStorageUtil.saveReceiptImage(context, imageUri)
+                val targetPath = savedInternalPath ?: imageUri.toString()
+                if (savedInternalPath != null) {
+                    if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                        ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+                    }
+                    scannedReceiptUri = savedInternalPath
+                } else {
+                    scannedReceiptUri = imageUri.toString()
+                }
+
+                analyzeReceiptAction(targetPath, false)
+            }
+        }
+    }
+
+    val launchReceiptScanner = {
+        var currentContext = context
+        var act: Activity? = null
+        while (currentContext is ContextWrapper) {
+            if (currentContext is Activity) {
+                act = currentContext
+                break
+            }
+            currentContext = currentContext.baseContext
+        }
+        if (act == null) {
+            viewModel.showToast("No se pudo iniciar el escáner de cámara")
+        } else {
+            scanner.getStartScanIntent(act)
+                .addOnSuccessListener { intentSender ->
+                    scannerLauncher.launch(
+                        IntentSenderRequest.Builder(intentSender).build()
+                    )
+                }
+                .addOnFailureListener { e ->
+                    viewModel.showToast("Error al abrir escáner: ${e.localizedMessage}")
+                }
+        }
+    }
 
     val formattedDate = String.format(Locale.US, "%04d/%02d/%02d", selectedYear, selectedMonth, selectedDay)
     val cutDay = selectedCard?.cutDay ?: 24
@@ -233,6 +444,294 @@ fun NuevoConsumoScreen(
                             fontWeight = FontWeight.Bold,
                             color = CreditiaTertiary
                         )
+                    }
+                }
+            }
+
+            // Receipt Scanner with ML Kit and Gemini AI
+            item {
+                Card(
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = CreditiaSurfaceContainerLowest),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.DocumentScanner,
+                                    contentDescription = null,
+                                    tint = CreditiaPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = "Comprobante de Pago (Opcional)",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (uiState.isGeminiAiEnabled) CreditiaTertiary.copy(alpha = 0.12f) else CreditiaPrimary.copy(alpha = 0.12f))
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (uiState.isGeminiAiEnabled) Icons.Default.AutoAwesome else Icons.Default.Verified,
+                                        contentDescription = null,
+                                        tint = if (uiState.isGeminiAiEnabled) CreditiaTertiary else CreditiaPrimary,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Text(
+                                        text = if (uiState.isGeminiAiEnabled) "Lectura IA Gemini" else "OCR 100% Offline",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (uiState.isGeminiAiEnabled) CreditiaTertiary else CreditiaPrimary
+                                    )
+                                }
+                            }
+                        }
+
+                        if (isAnalyzingReceipt) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = CreditiaPrimary.copy(alpha = 0.08f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(24.dp),
+                                        color = CreditiaPrimary,
+                                        strokeWidth = 2.5.dp
+                                    )
+                                    Column {
+                                        Text(
+                                            text = if (uiState.isGeminiAiEnabled) "Leyendo comprobante con Gemini..." else "Leyendo comprobante con OCR Offline...",
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = CreditiaPrimary
+                                        )
+                                        Text(
+                                            text = "Autoajustando recorte y extrayendo monto, fecha y comercio",
+                                            fontSize = 11.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (scannedReceiptUri != null) {
+                            val currentReceipt = scannedReceiptUri!!
+                            val imgModel: Any = if (currentReceipt.startsWith("/") || currentReceipt.startsWith("file://")) {
+                                File(currentReceipt.removePrefix("file://"))
+                            } else {
+                                currentReceipt
+                            }
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(CreditiaSurfaceContainerLow)
+                                        .padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable {
+                                                viewingReceiptUri = currentReceipt
+                                            }
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(54.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(CreditiaSurfaceContainerHigh)
+                                                .border(1.dp, CreditiaPrimary.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                        ) {
+                                            AsyncImage(
+                                                model = imgModel,
+                                                contentDescription = "Comprobante recortado",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.BottomEnd)
+                                                    .clip(RoundedCornerShape(topStart = 4.dp))
+                                                    .background(Color.Black.copy(alpha = 0.65f))
+                                                    .padding(2.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.ZoomIn,
+                                                    contentDescription = "Ampliar foto",
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(11.dp)
+                                                )
+                                            }
+                                        }
+                                        Column {
+                                            Text(
+                                                text = "Comprobante Guardado",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = MaterialTheme.colorScheme.onSurface
+                                            )
+                                            Text(
+                                                text = "Toca para pantalla completa y zoom",
+                                                fontSize = 11.sp,
+                                                color = CreditiaPrimary
+                                            )
+                                        }
+                                    }
+
+                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        IconButton(
+                                            onClick = { launchReceiptScanner() }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CameraAlt,
+                                                contentDescription = "Volver a escanear",
+                                                tint = CreditiaPrimary
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                                                    ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+                                                }
+                                                scannedReceiptUri = null
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Quitar foto",
+                                                tint = CreditiaError
+                                            )
+                                        }
+                                    }
+                                }
+
+                                // Botones para reanalizar comprobante existente
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (uiState.isGeminiAiEnabled) {
+                                        Button(
+                                            onClick = { analyzeReceiptAction(currentReceipt, false) },
+                                            modifier = Modifier.weight(1f).height(38.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = CreditiaTertiary),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.AutoAwesome,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Text(
+                                                    text = "Reanalizar con IA",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Button(
+                                        onClick = { analyzeReceiptAction(currentReceipt, true) },
+                                        modifier = Modifier.weight(1f).height(38.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (uiState.isGeminiAiEnabled) CreditiaSurfaceContainerHigh else CreditiaPrimary,
+                                            contentColor = if (uiState.isGeminiAiEnabled) MaterialTheme.colorScheme.onSurface else Color.White
+                                        ),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Sync,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                            Text(
+                                                text = if (uiState.isGeminiAiEnabled) "Reanalizar Offline" else "Reanalizar Comprobante",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            Button(
+                                onClick = { launchReceiptScanner() },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(46.dp)
+                                    .testTag("btn_scan_receipt"),
+                                colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.CameraAlt,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = "Tomar foto del comprobante",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            }
+                            Text(
+                                text = "Autoajusta el recorte al tamaño real del comprobante y autocompleta monto, fecha, establecimiento y descripción con Gemini.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                lineHeight = 15.sp
+                            )
+                        }
                     }
                 }
             }
@@ -770,7 +1269,8 @@ fun NuevoConsumoScreen(
                                     amount = parsedAmount,
                                     establishment = establishment,
                                     description = description,
-                                    dateString = formattedDate
+                                    dateString = formattedDate,
+                                    receiptUri = scannedReceiptUri
                                 )
                                 onBack()
                             }
@@ -800,6 +1300,34 @@ fun NuevoConsumoScreen(
                     }
 
                     if (editing != null) {
+                        Button(
+                            onClick = { showDeferDialog = true },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(52.dp)
+                                .testTag("btn_defer_editing_expense"),
+                            colors = ButtonDefaults.buttonColors(containerColor = CreditiaTertiary.copy(alpha = 0.15f)),
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CalendarMonth,
+                                    contentDescription = null,
+                                    tint = CreditiaTertiary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = "Diferir Consumo en Cuotas",
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = CreditiaTertiary
+                                )
+                            }
+                        }
+
                         Button(
                             onClick = { showDeleteConfirmation = true },
                             modifier = Modifier
@@ -831,6 +1359,9 @@ fun NuevoConsumoScreen(
 
                     Button(
                         onClick = {
+                            if (scannedReceiptUri != null && scannedReceiptUri != editing?.receiptUri) {
+                                ReceiptStorageUtil.deleteReceiptFile(scannedReceiptUri)
+                            }
                             viewModel.clearEditingExpense()
                             onBack()
                         },
@@ -961,7 +1492,8 @@ fun NuevoConsumoScreen(
                                 amount = parsedAmount,
                                 establishment = establishment,
                                 description = description,
-                                dateString = formattedDate
+                                dateString = formattedDate,
+                                receiptUri = scannedReceiptUri
                             )
                             onBack()
                         },
@@ -997,17 +1529,45 @@ fun NuevoConsumoScreen(
                 },
                 title = {
                     Text(
-                        text = "¿Eliminar este consumo?",
+                        text = if (editing.isDeferredExpense()) "¿Eliminar consumo diferido?" else "¿Eliminar este consumo?",
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp
                     )
                 },
                 text = {
-                    Text(
-                        text = "¿Deseas eliminar permanentemente el registro #${editing.sequenceNumber} (${editing.establishment} por $ ${String.format(Locale.US, "%.2f", editing.amount)}) de la base de datos local?",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "¿Deseas eliminar permanentemente el registro #${editing.sequenceNumber} (${editing.establishment} por S/ ${String.format(Locale.US, "%.2f", editing.amount)}) de la base de datos local?",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (editing.isDeferredExpense()) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = CreditiaError.copy(alpha = 0.12f),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = CreditiaError,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Text(
+                                        text = "Este consumo forma parte de una compra diferida. Al eliminarlo, se eliminarán automáticamente todas sus cuotas en todos los periodos.",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = CreditiaError
+                                    )
+                                }
+                            }
+                        }
+                    }
                 },
                 confirmButton = {
                     Button(
@@ -1034,6 +1594,95 @@ fun NuevoConsumoScreen(
                         Text("Cancelar")
                     }
                 }
+            )
+        }
+
+        if (showNoApiKeyDialog) {
+            AlertDialog(
+                onDismissRequest = { showNoApiKeyDialog = false },
+                icon = {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = CreditiaPrimary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                },
+                title = {
+                    Text(
+                        text = "Configuración de Gemini requerida",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 17.sp
+                    )
+                },
+                text = {
+                    Text(
+                        text = "Para que la IA de Gemini pueda leer automáticamente el valor, fecha, establecimiento y descripción del comprobante, primero debes ingresar tu API Key en la pantalla de Ajustes.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            showNoApiKeyDialog = false
+                            onBack()
+                            viewModel.selectTab("ajustes")
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary)
+                    ) {
+                        Text("Ir a Ajustes")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showNoApiKeyDialog = false }) {
+                        Text("Cancelar")
+                    }
+                }
+            )
+        }
+
+        // Modal de Diferir Consumo en Cuotas
+        if (showDeferDialog && editing != null) {
+            val parsedAmount = amountString.toDoubleOrNull() ?: editing.amount
+            val currentEstablishment = establishment.ifBlank { editing.establishment }
+            val currentDescription = description.ifBlank { editing.description }
+            val currentReceipt = scannedReceiptUri ?: editing.receiptUri
+            val card = selectedCard ?: uiState.selectedCard
+            val cutDay = card?.cutDay ?: 24
+
+            DiferirConsumoDialog(
+                amount = parsedAmount,
+                establishment = currentEstablishment,
+                dateString = formattedDate,
+                cutDay = cutDay,
+                cardName = card?.cardName ?: "Tarjeta",
+                repository = viewModel.repository,
+                onDismiss = { showDeferDialog = false },
+                onConfirm = { months, monthlyInterestRate ->
+                    showDeferDialog = false
+                    val targetExpense = editing.copy(
+                        cardId = card?.id ?: editing.cardId,
+                        amount = parsedAmount,
+                        dateString = formattedDate,
+                        establishment = currentEstablishment,
+                        description = currentDescription,
+                        receiptUri = currentReceipt
+                    )
+                    viewModel.deferExpense(targetExpense, months, monthlyInterestRate) {
+                        onBack()
+                    }
+                }
+            )
+        }
+
+        // Visor a Pantalla Completa con Zoom para comprobante en edición/nuevo
+        if (viewingReceiptUri != null) {
+            ReceiptViewerDialog(
+                imageUri = viewingReceiptUri!!,
+                title = establishment.ifBlank { "Comprobante de compra" },
+                subtitle = "Toca dos veces o pellizca para hacer zoom",
+                onDismiss = { viewingReceiptUri = null }
             )
         }
     }

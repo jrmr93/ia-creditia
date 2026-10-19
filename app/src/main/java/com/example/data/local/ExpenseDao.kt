@@ -20,6 +20,9 @@ interface ExpenseDao {
     @Query("SELECT * FROM expenses WHERE id = :id LIMIT 1")
     suspend fun getExpenseById(id: Long): ExpenseEntity?
 
+    @Query("SELECT * FROM expenses WHERE cardId = :cardId")
+    suspend fun getExpensesListByCard(cardId: Long): List<ExpenseEntity>
+
     @Query("SELECT MAX(sequenceNumber) FROM expenses")
     suspend fun getMaxSequenceNumber(): Int?
 
@@ -46,4 +49,13 @@ interface ExpenseDao {
 
     @Query("DELETE FROM expenses")
     suspend fun clearAllExpenses()
+
+    @Query("SELECT * FROM expenses WHERE deferredGroupId = :groupId")
+    suspend fun getExpensesByDeferredGroupId(groupId: String): List<ExpenseEntity>
+
+    @Query("DELETE FROM expenses WHERE deferredGroupId = :groupId")
+    suspend fun deleteExpensesByDeferredGroupId(groupId: String): Int
+
+    @Query("SELECT * FROM expenses WHERE cardId = :cardId AND establishment = :establishment AND description LIKE :descriptionPattern")
+    suspend fun findSimilarDeferredExpenses(cardId: Long, establishment: String, descriptionPattern: String): List<ExpenseEntity>
 }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,6 +46,21 @@ import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.WifiOff
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.text.input.VisualTransformation
+import com.example.util.GeminiService
+import com.example.util.GeminiTestResult
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -67,7 +83,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -110,23 +128,31 @@ fun AjustesScreen(
     var newPinInput by remember { mutableStateOf("") }
     var confirmPinInput by remember { mutableStateOf("") }
     var pinFeedbackError by remember { mutableStateOf<String?>(null) }
+    var geminiApiKeyInput by remember(uiState.geminiApiKey) { mutableStateOf(uiState.geminiApiKey) }
+    var isApiKeyVisible by remember { mutableStateOf(false) }
+    var isModelSelectorExpanded by remember { mutableStateOf(false) }
+    var customModelInput by remember(uiState.geminiModel) { mutableStateOf(uiState.geminiModel) }
 
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
     val exportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json")
+        contract = ActivityResultContracts.CreateDocument("application/zip")
     ) { uri ->
         if (uri != null) {
-            try {
-                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                    val json = viewModel.exportDatabaseJson()
-                    outputStream.write(json.toByteArray(Charsets.UTF_8))
-                    outputStream.flush()
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                        viewModel.exportFullBackup(outputStream)
+                    }
+                    withContext(Dispatchers.Main) {
+                        viewModel.showToast("✓ Respaldo completo guardado exitosamente (tarjetas, consumos y fotos)")
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        viewModel.showToast("Error al exportar: ${e.localizedMessage}")
+                    }
                 }
-                viewModel.showToast("✓ Respaldo guardado exitosamente en la ubicación seleccionada")
-            } catch (e: Exception) {
-                viewModel.showToast("Error al exportar: ${e.localizedMessage}")
             }
         }
     }
@@ -135,25 +161,23 @@ fun AjustesScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            try {
-                val content = context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                    inputStream.bufferedReader().readText()
-                }
-                if (!content.isNullOrBlank()) {
-                    coroutineScope.launch {
-                        try {
-                            val (cardsCount, expensesCount) = viewModel.restoreDatabaseFromJson(content)
-                            viewModel.showToast("✓ Sistema restaurado y actualizado: $cardsCount tarjetas y $expensesCount consumos")
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                        viewModel.restoreFullBackup(inputStream)
+                        withContext(Dispatchers.Main) {
                             viewModel.selectTab("consumos")
-                        } catch (e: Exception) {
-                            viewModel.showToast("Error: El archivo seleccionado no tiene un formato válido")
+                        }
+                    } ?: run {
+                        withContext(Dispatchers.Main) {
+                            viewModel.showToast("Error: No se pudo abrir el archivo seleccionado")
                         }
                     }
-                } else {
-                    viewModel.showToast("El archivo de respaldo seleccionado está vacío")
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        viewModel.showToast("Error al restaurar: ${e.localizedMessage ?: "Formato inválido"}")
+                    }
                 }
-            } catch (e: Exception) {
-                viewModel.showToast("Error al leer archivo: ${e.localizedMessage}")
             }
         }
     }
@@ -927,6 +951,545 @@ fun AjustesScreen(
                 }
             }
 
+            // SECTION: Inteligencia Artificial (Gemini AI)
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = CreditiaPrimary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = "Inteligencia Artificial (Gemini)",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                        Text(
+                            text = "Lectura de comprobantes",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = CreditiaSurfaceContainerLowest),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            // Switch Activar / Desactivar Inteligencia Artificial
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(
+                                                if (uiState.isGeminiAiEnabled) CreditiaPrimary.copy(alpha = 0.12f) else CreditiaSurfaceContainer
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.SmartToy,
+                                            contentDescription = null,
+                                            tint = if (uiState.isGeminiAiEnabled) CreditiaPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                    Column {
+                                        Text(
+                                            text = "Usar Inteligencia Artificial",
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = if (uiState.isGeminiAiEnabled) "Gemini Cloud activo • Lectura avanzada de tickets" else "Desactivado • Se usará OCR 100% Offline",
+                                            fontSize = 12.sp,
+                                            color = if (uiState.isGeminiAiEnabled) CreditiaPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                Switch(
+                                    checked = uiState.isGeminiAiEnabled,
+                                    onCheckedChange = { viewModel.toggleGeminiAiEnabled(it) },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color.White,
+                                        checkedTrackColor = CreditiaPrimaryContainer
+                                    ),
+                                    modifier = Modifier.testTag("switch_gemini_ai")
+                                )
+                            }
+
+                            if (!uiState.isGeminiAiEnabled) {
+                                Card(
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = CardDefaults.cardColors(containerColor = CreditiaSurfaceContainerLow),
+                                    border = BorderStroke(1.dp, CreditiaTertiary.copy(alpha = 0.3f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = null,
+                                            tint = CreditiaTertiary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Text(
+                                            text = "Modo Offline Activo: La app leerá tus comprobantes con el motor OCR local de Google en tu dispositivo, sin consumir internet ni cuotas de API.",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            lineHeight = 16.sp
+                                        )
+                                    }
+                                }
+                            } else {
+                                // Campo de API Key
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        text = "Gemini API Key (Google AI Studio):",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                OutlinedTextField(
+                                    value = geminiApiKeyInput,
+                                    onValueChange = {
+                                        geminiApiKeyInput = it
+                                        viewModel.clearGeminiTestStatus()
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("input_gemini_api_key"),
+                                    placeholder = {
+                                        Text(
+                                            "Pega tu API Key (ej. AIzaSy...)",
+                                            fontSize = 13.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
+                                    },
+                                    singleLine = true,
+                                    visualTransformation = if (isApiKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Key,
+                                            contentDescription = null,
+                                            tint = CreditiaPrimary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        IconButton(onClick = { isApiKeyVisible = !isApiKeyVisible }) {
+                                            Icon(
+                                                imageVector = if (isApiKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                                contentDescription = if (isApiKeyVisible) "Ocultar clave" else "Mostrar clave",
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(10.dp)
+                                )
+
+                                // Botones Guardar / Limpiar
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            viewModel.saveGeminiApiKey(geminiApiKeyInput)
+                                        },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(40.dp)
+                                            .testTag("btn_save_gemini_key"),
+                                        colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary),
+                                        shape = RoundedCornerShape(10.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Save,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = "Guardar Clave",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    }
+
+                                    if (geminiApiKeyInput.isNotEmpty()) {
+                                        Button(
+                                            onClick = {
+                                                geminiApiKeyInput = ""
+                                                viewModel.saveGeminiApiKey("")
+                                            },
+                                            modifier = Modifier.height(40.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = CreditiaSurfaceContainer),
+                                            shape = RoundedCornerShape(10.dp)
+                                        ) {
+                                            Text(
+                                                text = "Borrar",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = CreditiaError
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            HorizontalDivider(color = CreditiaSurfaceContainerHigh)
+
+                            // Selector de Modelo
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Modelo a utilizar:",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+
+                                    // Botón para detectar modelos de la cuenta
+                                    TextButton(
+                                        onClick = { viewModel.detectAvailableModels() },
+                                        enabled = !uiState.isDetectingModels && uiState.geminiApiKey.isNotBlank()
+                                    ) {
+                                        if (uiState.isDetectingModels) {
+                                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Detectando...", fontSize = 11.sp)
+                                        } else {
+                                            Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(14.dp), tint = CreditiaPrimary)
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Detectar de mi cuenta", fontSize = 11.sp, color = CreditiaPrimary)
+                                        }
+                                    }
+                                }
+
+                                // Chips de modelos estándar y más compatibles
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    val standardModels = listOf(
+                                        "gemini-3.5-flash" to "Recomendado / Parki",
+                                        "gemini-3.8-flash" to "Última versión 3.8",
+                                        "gemini-3.5-flash-lite" to "Ultra rápido y ligero",
+                                        "gemini-flash-latest" to "Alias auto-actualizado",
+                                        "gemini-3.7-flash" to "Avanzado 3.7"
+                                    )
+
+                                    standardModels.chunked(2).forEach { rowModels ->
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            rowModels.forEach { (modelName, subtitle) ->
+                                                val isSelected = uiState.geminiModel == modelName
+                                                Box(
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .clip(RoundedCornerShape(10.dp))
+                                                        .background(
+                                                            if (isSelected) CreditiaPrimaryContainer else CreditiaSurfaceContainer
+                                                        )
+                                                        .clickable {
+                                                            viewModel.saveGeminiModel(modelName)
+                                                            customModelInput = modelName
+                                                        }
+                                                        .padding(vertical = 8.dp, horizontal = 8.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                        Text(
+                                                            text = modelName,
+                                                            fontSize = 11.sp,
+                                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                                            color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                                                        )
+                                                        Text(
+                                                            text = subtitle,
+                                                            fontSize = 9.sp,
+                                                            color = if (isSelected) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            if (rowModels.size == 1) {
+                                                Spacer(modifier = Modifier.weight(1f))
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Si se detectaron modelos específicos de la API Key del usuario
+                                if (uiState.availableModelOptions.isNotEmpty()) {
+                                    Text(
+                                        text = "Modelos detectados en tu cuenta:",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = CreditiaPrimary
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        uiState.availableModelOptions.take(4).forEach { detectedModel ->
+                                            val isSelected = uiState.geminiModel == detectedModel
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(if (isSelected) CreditiaTertiaryContainer else CreditiaSurfaceContainerHigh)
+                                                    .clickable {
+                                                        viewModel.saveGeminiModel(detectedModel)
+                                                        customModelInput = detectedModel
+                                                    }
+                                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                                            ) {
+                                                Text(
+                                                    text = detectedModel,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                    color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Campo de texto para modelo manual o personalizado (como en parki)
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Text(
+                                        text = "O escribe el nombre exacto de tu modelo (ej. como en tu app parki):",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        OutlinedTextField(
+                                            value = customModelInput,
+                                            onValueChange = { customModelInput = it },
+                                            modifier = Modifier.weight(1f),
+                                            singleLine = true,
+                                            placeholder = { Text("ej. gemini-1.5-flash", fontSize = 12.sp) },
+                                            shape = RoundedCornerShape(10.dp)
+                                        )
+                                        Button(
+                                            onClick = {
+                                                if (customModelInput.isNotBlank()) {
+                                                    viewModel.saveGeminiModel(customModelInput.trim())
+                                                    viewModel.showToast("Modelo configurado a: ${customModelInput.trim()}")
+                                                }
+                                            },
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary)
+                                        ) {
+                                            Text("Aplicar", fontSize = 12.sp)
+                                        }
+                                    }
+                                }
+                            }
+
+                            HorizontalDivider(color = CreditiaSurfaceContainerHigh)
+
+                            // Test de Conexión y Modelo
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = {
+                                        viewModel.testGeminiConnection()
+                                    },
+                                    enabled = !uiState.isTestingGemini && uiState.geminiApiKey.isNotBlank(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(44.dp)
+                                        .testTag("btn_test_gemini_connection"),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = CreditiaTertiary,
+                                        disabledContainerColor = CreditiaSurfaceContainer
+                                    ),
+                                    shape = RoundedCornerShape(10.dp)
+                                ) {
+                                    if (uiState.isTestingGemini) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(18.dp),
+                                                color = Color.White,
+                                                strokeWidth = 2.dp
+                                            )
+                                            Text(
+                                                text = "Probando conexión con ${uiState.geminiModel}...",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color.White
+                                            )
+                                        }
+                                    } else {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.AutoAwesome,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                                tint = if (uiState.geminiApiKey.isNotBlank()) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Text(
+                                                text = "Probar Conexión con ${uiState.geminiModel}",
+                                                fontSize = 13.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = if (uiState.geminiApiKey.isNotBlank()) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (uiState.geminiApiKey.isBlank()) {
+                                    Text(
+                                        text = "ℹ️ Guarda tu API Key de Gemini para habilitar el test de conexión y el escaneo de tickets.",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+
+                                // Resultado del test
+                                when (val status = uiState.geminiTestStatus) {
+                                    is GeminiTestResult.Success -> {
+                                        Card(
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = CardDefaults.cardColors(containerColor = CreditiaTertiaryContainer),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.CheckCircle,
+                                                    contentDescription = null,
+                                                    tint = Color.White,
+                                                    modifier = Modifier.size(20.dp)
+                                                )
+                                                Column {
+                                                    Text(
+                                                        text = "¡Prueba Exitosa!",
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = Color.White
+                                                    )
+                                                    Text(
+                                                        text = status.message,
+                                                        fontSize = 11.sp,
+                                                        color = Color.White.copy(alpha = 0.9f)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                    is GeminiTestResult.Error -> {
+                                        Card(
+                                            shape = RoundedCornerShape(10.dp),
+                                            colors = CardDefaults.cardColors(containerColor = CreditiaErrorContainer),
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Error,
+                                                        contentDescription = null,
+                                                        tint = CreditiaOnErrorContainer,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Fallo en la conexión",
+                                                        fontSize = 12.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = CreditiaOnErrorContainer
+                                                    )
+                                                }
+                                                Text(
+                                                    text = status.message,
+                                                    fontSize = 11.sp,
+                                                    color = CreditiaOnErrorContainer
+                                                )
+
+                                                if (uiState.geminiModel != "gemini-3.5-flash") {
+                                                    Button(
+                                                        onClick = {
+                                                            viewModel.saveGeminiModel("gemini-3.5-flash")
+                                                            customModelInput = "gemini-3.5-flash"
+                                                            viewModel.testGeminiConnection()
+                                                        },
+                                                        colors = ButtonDefaults.buttonColors(containerColor = CreditiaTertiary),
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        modifier = Modifier.fillMaxWidth()
+                                                    ) {
+                                                        Text("Cambiar a 'gemini-3.5-flash' y probar ahora", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    null -> {}
+                                }
+                            }
+                        }
+                    }
+                    }
+                }
+            }
+
             // SECTION 2: Almacenamiento y Bóveda
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1056,7 +1619,7 @@ fun AjustesScreen(
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable {
                                         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                                        exportLauncher.launch("creditia_respaldo_$timestamp.json")
+                                        exportLauncher.launch("creditia_respaldo_$timestamp.zip")
                                     }
                                     .testTag("btn_export_backup")
                             ) {
@@ -1079,13 +1642,13 @@ fun AjustesScreen(
                                         )
                                         Column {
                                             Text(
-                                                text = "Exportar Respaldo Local",
+                                                text = "Exportar Respaldo Completo (ZIP con Fotos)",
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Selecciona la carpeta donde guardar el JSON",
+                                                text = "Guarda tarjetas, consumos y fotos en un paquete comprimido seguro",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -1108,7 +1671,7 @@ fun AjustesScreen(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable {
-                                        restoreLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                                        restoreLauncher.launch(arrayOf("application/zip", "application/json", "application/octet-stream", "*/*"))
                                     }
                                     .testTag("btn_restore_backup")
                             ) {
@@ -1131,13 +1694,13 @@ fun AjustesScreen(
                                         )
                                         Column {
                                             Text(
-                                                text = "Restaurar Respaldo Local",
+                                                text = "Restaurar Respaldo Local (ZIP o JSON)",
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Selecciona el archivo para actualizar la app",
+                                                text = "Restaura tu base de datos completa con fotos y cuotas diferidas",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -1187,7 +1750,7 @@ fun AjustesScreen(
                                                 color = CreditiaError
                                             )
                                             Text(
-                                                text = "Purga irreversible de transacciones",
+                                                text = "Purga absoluta de tarjetas, consumos, cuotas diferidas y fotos locales",
                                                 fontSize = 11.sp,
                                                 color = CreditiaOnErrorContainer.copy(alpha = 0.8f)
                                             )
