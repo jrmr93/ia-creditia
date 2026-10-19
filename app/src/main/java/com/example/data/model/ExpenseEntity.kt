@@ -29,5 +29,10 @@ data class ExpenseEntity(
         val total = match.groupValues[2].toIntOrNull() ?: return null
         return Pair(current, total)
     }
+
+    fun getReceiptUriList(): List<String> {
+        if (receiptUri.isNullOrBlank()) return emptyList()
+        return receiptUri.split("|").filter { it.isNotBlank() }
+    }
 }
 

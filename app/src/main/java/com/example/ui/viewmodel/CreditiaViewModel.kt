@@ -39,11 +39,11 @@ import java.text.SimpleDateFormat
 import org.json.JSONObject
 import org.json.JSONArray
 
-enum class SortOrder(val displayName: String) {
-    DATE_DESC("Fecha (más reciente)"),
-    DATE_ASC("Fecha (más antigua)"),
-    AMOUNT_DESC("Monto (mayor a menor)"),
-    AMOUNT_ASC("Monto (menor a mayor)")
+enum class SortOrder(val displayName: String, val shortLabel: String) {
+    DATE_DESC("Fecha (más reciente)", "🕒 Más reciente"),
+    DATE_ASC("Fecha (más antigua)", "📅 Más antiguo"),
+    AMOUNT_DESC("Monto (mayor a menor)", "▲ Mayor monto"),
+    AMOUNT_ASC("Monto (menor a mayor)", "▼ Menor monto")
 }
 
 data class CreditiaUiState(
@@ -64,6 +64,9 @@ data class CreditiaUiState(
     val toastMessage: String? = null,
     val isPaymentNotificationEnabled: Boolean = false,
     val notificationLeadDays: Int = 3,
+    // Selection state for multi-defer
+    val isSelectionMode: Boolean = false,
+    val selectedExpenseIds: Set<Long> = emptySet(),
     // Modals
     val expenseToDelete: ExpenseEntity? = null,
     val cardToDelete: CreditCardEntity? = null,
@@ -458,13 +461,55 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(isClearDbOpen = false) }
     }
 
+    fun toggleSelectionMode(enabled: Boolean) {
+        _uiState.update { it.copy(isSelectionMode = enabled, selectedExpenseIds = if (!enabled) emptySet() else it.selectedExpenseIds) }
+    }
+
+    fun toggleExpenseSelection(expenseId: Long) {
+        _uiState.update { current ->
+            val newSet = if (expenseId in current.selectedExpenseIds) {
+                current.selectedExpenseIds - expenseId
+            } else {
+                current.selectedExpenseIds + expenseId
+            }
+            current.copy(
+                selectedExpenseIds = newSet,
+                isSelectionMode = newSet.isNotEmpty()
+            )
+        }
+    }
+
+    fun selectAllExpenses(expenseIds: Set<Long>) {
+        _uiState.update { it.copy(selectedExpenseIds = expenseIds, isSelectionMode = expenseIds.isNotEmpty()) }
+    }
+
+    fun clearExpenseSelection() {
+        _uiState.update { it.copy(selectedExpenseIds = emptySet(), isSelectionMode = false) }
+    }
+
     fun confirmClearDb() {
         val app = getApplication<Application>()
+        cancelPaymentAlarm()
         viewModelScope.launch {
             ReceiptStorageUtil.deleteAllReceiptFiles(app)
             repository.clearAllData()
-            _uiState.update { it.copy(isClearDbOpen = false, selectedCard = null, cards = emptyList()) }
-            showToast("Base SQLite purgada completamente (tarjetas, consumos y fotos)")
+            _uiState.update {
+                it.copy(
+                    isClearDbOpen = false,
+                    selectedCard = null,
+                    cards = emptyList(),
+                    editingExpense = null,
+                    expenseToDelete = null,
+                    cardToDelete = null,
+                    searchQuery = "",
+                    isSearchActive = false,
+                    selectedExactDate = null,
+                    selectedPeriod = "",
+                    isSelectionMode = false,
+                    selectedExpenseIds = emptySet()
+                )
+            }
+            showToast("✓ Base de datos purgada completamente (tarjetas, consumos, diferidos y fotos)")
         }
     }
 
@@ -491,12 +536,76 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         return true
     }
 
+    /**
+     * Exporta el respaldo completo (tarjetas, consumos con todos sus datos y fotos de comprobantes)
+     * en un archivo ZIP al OutputStream proporcionado.
+     */
+    fun exportFullBackup(outputStream: java.io.OutputStream) {
+        val cards = _uiState.value.cards
+        val expenses = allExpenses.value
+        val app = getApplication<Application>()
+        com.example.util.BackupUtil.exportFullBackup(app, cards, expenses, outputStream)
+    }
+
+    /**
+     * Restaura un respaldo completo desde el InputStream (acepta archivo ZIP con fotos o JSON legacy).
+     */
+    suspend fun restoreFullBackup(inputStream: java.io.InputStream): Triple<Int, Int, Int> {
+        val app = getApplication<Application>()
+
+        cancelPaymentAlarm()
+        ReceiptStorageUtil.deleteAllReceiptFiles(app)
+        repository.clearAllData()
+
+        val parsed = com.example.util.BackupUtil.parseBackup(app, inputStream)
+
+        val idMapping = mutableMapOf<Long, Long>()
+        var restoredCards = 0
+        var restoredExpenses = 0
+
+        for (card in parsed.cards) {
+            val oldId = card.id
+            val newCard = card.copy(id = 0L)
+            val newId = repository.insertCard(newCard)
+            idMapping[oldId] = newId
+            restoredCards++
+        }
+
+        for (expense in parsed.expenses) {
+            val oldCardId = expense.cardId
+            val targetCardId = idMapping[oldCardId] ?: idMapping.values.firstOrNull() ?: 1L
+            val newExpense = expense.copy(
+                id = 0L,
+                cardId = targetCardId
+            )
+            repository.insertExpense(newExpense)
+            restoredExpenses++
+        }
+
+        val allCardsList = repository.getAllCardsList()
+        val firstCard = allCardsList.firstOrNull()
+        _uiState.update { current ->
+            current.copy(
+                cards = allCardsList,
+                selectedCard = firstCard,
+                currentTab = "consumos",
+                isSearchActive = false,
+                searchQuery = "",
+                selectedExpenseIds = emptySet(),
+                isSelectionMode = false
+            )
+        }
+        val photoMsg = if (parsed.photosCount > 0) " y ${parsed.photosCount} fotos" else ""
+        showToast("✓ Respaldo restaurado: $restoredCards tarjetas, $restoredExpenses consumos$photoMsg")
+        return Triple(restoredCards, restoredExpenses, parsed.photosCount)
+    }
+
     fun exportDatabaseJson(): String {
         val cards = _uiState.value.cards
         val expenses = allExpenses.value
         val json = JSONObject()
         json.put("app", "Creditia")
-        json.put("version", 1)
+        json.put("version", 2)
         json.put("export_date", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
         json.put("cards_count", cards.size)
         json.put("expenses_count", expenses.size)
@@ -512,6 +621,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             obj.put("last4", c.last4)
             obj.put("cutDay", c.cutDay)
             obj.put("payDay", c.payDay)
+            obj.put("payBusinessDays", c.payBusinessDays)
             obj.put("cardColorTheme", c.cardColorTheme)
             obj.put("creditLimit", c.creditLimit)
             obj.put("isDefault", c.isDefault)
@@ -530,6 +640,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             obj.put("description", e.description)
             obj.put("dateString", e.dateString)
             obj.put("billingPeriod", e.billingPeriod)
+            obj.put("deferredGroupId", e.deferredGroupId ?: "")
+            obj.put("receiptUri", e.receiptUri ?: "")
             obj.put("timestamp", e.timestamp)
             expensesArray.put(obj)
         }
@@ -538,69 +650,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     }
 
     suspend fun restoreDatabaseFromJson(jsonContent: String): Pair<Int, Int> {
-        val root = JSONObject(jsonContent)
-        val cardsArray = root.optJSONArray("cards") ?: JSONArray()
-        val expensesArray = root.optJSONArray("expenses") ?: JSONArray()
-
-        val app = getApplication<Application>()
-        ReceiptStorageUtil.deleteAllReceiptFiles(app)
-        repository.clearAllData()
-
-        val idMapping = mutableMapOf<Long, Long>()
-        var restoredCards = 0
-        var restoredExpenses = 0
-
-        for (i in 0 until cardsArray.length()) {
-            val obj = cardsArray.getJSONObject(i)
-            val oldId = obj.optLong("id", 0L)
-            val card = CreditCardEntity(
-                bankName = obj.optString("bankName", "BANCO"),
-                cardName = obj.optString("cardName", "TARJETA"),
-                network = obj.optString("network", "VISA"),
-                tier = obj.optString("tier", "CLASSIC"),
-                last4 = obj.optString("last4", "0000"),
-                cutDay = obj.optInt("cutDay", 24),
-                payDay = obj.optInt("payDay", 14),
-                cardColorTheme = obj.optString("cardColorTheme", "blue"),
-                creditLimit = obj.optDouble("creditLimit", 4000.0),
-                isDefault = obj.optBoolean("isDefault", false)
-            )
-            val newId = repository.insertCard(card)
-            idMapping[oldId] = newId
-            restoredCards++
-        }
-
-        for (i in 0 until expensesArray.length()) {
-            val obj = expensesArray.getJSONObject(i)
-            val oldCardId = obj.optLong("cardId", 0L)
-            val targetCardId = idMapping[oldCardId] ?: idMapping.values.firstOrNull() ?: 1L
-            val expense = ExpenseEntity(
-                cardId = targetCardId,
-                sequenceNumber = obj.optInt("sequenceNumber", i + 1),
-                amount = obj.optDouble("amount", 0.0),
-                establishment = obj.optString("establishment", "Comercio"),
-                description = obj.optString("description", "Consumo"),
-                dateString = obj.optString("dateString", "2026/10/01"),
-                billingPeriod = obj.optString("billingPeriod", "Octubre 2026"),
-                timestamp = obj.optLong("timestamp", System.currentTimeMillis())
-            )
-            repository.insertExpense(expense)
-            restoredExpenses++
-        }
-
-        val allCardsList = repository.getAllCardsList()
-        val firstCard = allCardsList.firstOrNull()
-        _uiState.update { current ->
-            current.copy(
-                cards = allCardsList,
-                selectedCard = firstCard,
-                currentTab = "consumos",
-                isSearchActive = false,
-                searchQuery = ""
-            )
-        }
-        showToast("✓ Restauración completada: $restoredCards tarjetas y $restoredExpenses consumos")
-        return Pair(restoredCards, restoredExpenses)
+        val triple = restoreFullBackup(jsonContent.byteInputStream(Charsets.UTF_8))
+        return Pair(triple.first, triple.second)
     }
 
     fun setPinSetupMode(setup: Boolean) {

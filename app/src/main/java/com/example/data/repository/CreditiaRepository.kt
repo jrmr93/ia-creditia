@@ -336,7 +336,13 @@ class CreditiaRepository(
         val groupId = "def_multi_${System.currentTimeMillis()}"
         var currentSeq = getNextSequenceNumber()
         val cardId = selectedExpenses.first().cardId
-        val sharedReceipt = selectedExpenses.firstOrNull { !it.receiptUri.isNullOrBlank() }?.receiptUri
+        val allReceiptUris = selectedExpenses
+            .mapNotNull { it.receiptUri }
+            .flatMap { it.split("|") }
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .distinct()
+        val sharedReceipt = if (allReceiptUris.isNotEmpty()) allReceiptUris.joinToString("|") else null
 
         val newInstallments = plan.mapIndexed { index, itemPlan ->
             val k = index + 1

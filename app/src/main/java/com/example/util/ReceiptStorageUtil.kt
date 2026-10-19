@@ -53,18 +53,21 @@ object ReceiptStorageUtil {
      */
     fun deleteReceiptFile(filePathOrUri: String?) {
         if (filePathOrUri.isNullOrBlank()) return
-        try {
-            val file = if (filePathOrUri.startsWith("file://")) {
-                File(Uri.parse(filePathOrUri).path ?: "")
-            } else {
-                File(filePathOrUri)
+        val paths = filePathOrUri.split("|").map { it.trim() }.filter { it.isNotBlank() }
+        paths.forEach { singlePath ->
+            try {
+                val file = if (singlePath.startsWith("file://")) {
+                    File(Uri.parse(singlePath).path ?: "")
+                } else {
+                    File(singlePath)
+                }
+                if (file.exists() && file.isFile) {
+                    val deleted = file.delete()
+                    Log.d(TAG, "Archivo de comprobante eliminado ($deleted): ${file.absolutePath}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error al eliminar archivo de comprobante: ${e.message}", e)
             }
-            if (file.exists() && file.isFile) {
-                val deleted = file.delete()
-                Log.d(TAG, "Archivo de comprobante eliminado ($deleted): ${file.absolutePath}")
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error al eliminar archivo de comprobante: ${e.message}", e)
         }
     }
 

@@ -52,6 +52,10 @@ import androidx.compose.ui.window.DialogProperties
 import coil.compose.SubcomposeAsyncImage
 import java.io.File
 
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.runtime.mutableIntStateOf
+
 @Composable
 fun ReceiptViewerDialog(
     imageUri: String,
@@ -59,8 +63,15 @@ fun ReceiptViewerDialog(
     subtitle: String? = null,
     onDismiss: () -> Unit
 ) {
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    val uriList = remember(imageUri) {
+        imageUri.split("|").map { it.trim() }.filter { it.isNotBlank() }
+    }
+    var currentPhotoIndex by remember { mutableIntStateOf(0) }
+    val safeIndex = currentPhotoIndex.coerceIn(0, (uriList.size - 1).coerceAtLeast(0))
+    val activePhotoUri = uriList.getOrNull(safeIndex) ?: imageUri
+
+    var scale by remember(activePhotoUri) { mutableFloatStateOf(1f) }
+    var offset by remember(activePhotoUri) { mutableStateOf(Offset.Zero) }
 
     val transformState = rememberTransformableState { zoomChange, offsetChange, _ ->
         val newScale = (scale * zoomChange).coerceIn(1f, 6f)
@@ -94,7 +105,7 @@ fun ReceiptViewerDialog(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .pointerInput(Unit) {
+                    .pointerInput(activePhotoUri) {
                         detectTapGestures(
                             onDoubleTap = {
                                 if (scale > 1.2f) {
@@ -115,10 +126,10 @@ fun ReceiptViewerDialog(
                     .transformable(state = transformState),
                 contentAlignment = Alignment.Center
             ) {
-                val imageModel: Any = if (imageUri.startsWith("/") || imageUri.startsWith("file://")) {
-                    File(imageUri.removePrefix("file://"))
+                val imageModel: Any = if (activePhotoUri.startsWith("/") || activePhotoUri.startsWith("file://")) {
+                    File(activePhotoUri.removePrefix("file://"))
                 } else {
-                    imageUri
+                    activePhotoUri
                 }
 
                 SubcomposeAsyncImage(
@@ -145,7 +156,62 @@ fun ReceiptViewerDialog(
                 )
             }
 
-            // Barra superior con título y botón de cierre
+            // Botones flotantes de navegación entre fotos si hay más de 1 comprobante
+            if (uriList.size > 1) {
+                // Flecha Anterior
+                if (safeIndex > 0) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterStart)
+                            .padding(start = 12.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                currentPhotoIndex = (safeIndex - 1).coerceAtLeast(0)
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.65f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Foto anterior",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
+
+                // Flecha Siguiente
+                if (safeIndex < uriList.size - 1) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 12.dp)
+                    ) {
+                        IconButton(
+                            onClick = {
+                                currentPhotoIndex = (safeIndex + 1).coerceAtMost(uriList.size - 1)
+                            },
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(Color.Black.copy(alpha = 0.65f))
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                                contentDescription = "Siguiente foto",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Barra superior con título, indicador de fotos y botón de cierre
             Surface(
                 color = Color.Black.copy(alpha = 0.65f),
                 modifier = Modifier
@@ -160,15 +226,39 @@ fun ReceiptViewerDialog(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = title,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                        if (!subtitle.isNullOrBlank()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Text(
-                                text = subtitle,
+                                text = title,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                            if (uriList.size > 1) {
+                                Surface(
+                                    shape = RoundedCornerShape(100.dp),
+                                    color = Color(0xFF0284C7)
+                                ) {
+                                    Text(
+                                        text = "${safeIndex + 1}/${uriList.size}",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                        val subtitleText = if (uriList.size > 1) {
+                            "Comprobante ${safeIndex + 1} de ${uriList.size}${if (!subtitle.isNullOrBlank()) " • $subtitle" else ""}"
+                        } else {
+                            subtitle
+                        }
+                        if (!subtitleText.isNullOrBlank()) {
+                            Text(
+                                text = subtitleText,
                                 fontSize = 12.sp,
                                 color = Color.White.copy(alpha = 0.75f)
                             )

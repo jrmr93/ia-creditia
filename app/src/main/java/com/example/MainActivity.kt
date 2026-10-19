@@ -135,7 +135,7 @@ fun CreditiaApp(viewModel: CreditiaViewModel = viewModel()) {
                     }
                 },
                 floatingActionButton = {
-                    if (!isAddingNewExpense && uiState.currentTab in listOf("consumos", "tarjetas", "ajustes")) {
+                    if (!isAddingNewExpense && !uiState.isSelectionMode && uiState.currentTab in listOf("consumos", "tarjetas", "ajustes")) {
                         CreditiaFab(
                             onClick = {
                                 if (uiState.cards.isEmpty()) {

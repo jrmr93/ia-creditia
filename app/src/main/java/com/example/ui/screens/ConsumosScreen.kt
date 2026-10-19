@@ -188,9 +188,9 @@ fun ConsumosScreen(
     var viewingReceiptTitle by remember { mutableStateOf("") }
     var viewingReceiptSubtitle by remember { mutableStateOf("") }
 
-    var selectedExpenseIds by remember { mutableStateOf(setOf<Long>()) }
+    val selectedExpenseIds = uiState.selectedExpenseIds
+    val isSelectionMode = uiState.isSelectionMode
     var showMultiDeferDialog by remember { mutableStateOf(false) }
-    val isSelectionMode = selectedExpenseIds.isNotEmpty()
 
     Box(
         modifier = modifier
@@ -1027,7 +1027,11 @@ fun ConsumosScreen(
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(if (isSelectionMode) CreditiaTertiary.copy(alpha = 0.15f) else Color.Transparent)
                                         .clickable {
-                                            selectedExpenseIds = if (isSelectionMode) emptySet() else setOf(filteredExpenses.first().id)
+                                            if (isSelectionMode) {
+                                                viewModel.clearExpenseSelection()
+                                            } else {
+                                                filteredExpenses.firstOrNull()?.let { viewModel.toggleExpenseSelection(it.id) }
+                                            }
                                         }
                                         .padding(horizontal = 6.dp, vertical = 4.dp)
                                 ) {
@@ -1046,43 +1050,59 @@ fun ConsumosScreen(
                                 }
                             }
 
-                            Box {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { showSortMenu = true }
-                                        .padding(horizontal = 6.dp, vertical = 4.dp)
-                                        .testTag("btn_sort")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Tune,
-                                        contentDescription = "Ordenar",
-                                        tint = CreditiaPrimary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Text(
-                                        text = "Ordenar",
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = CreditiaPrimary
-                                    )
-                                }
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (showSortMenu) CreditiaPrimary.copy(alpha = 0.15f) else Color.Transparent)
+                                    .clickable { showSortMenu = !showSortMenu }
+                                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                                    .testTag("btn_sort"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Tune,
+                                    contentDescription = "Ordenar",
+                                    tint = CreditiaPrimary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
 
-                                DropdownMenu(
-                                    expanded = showSortMenu,
-                                    onDismissRequest = { showSortMenu = false }
-                                ) {
-                                    SortOrder.values().forEach { order ->
-                                        DropdownMenuItem(
-                                            text = { Text(order.displayName, fontSize = 13.sp) },
-                                            onClick = {
-                                                viewModel.setSortOrder(order)
-                                                showSortMenu = false
-                                            }
+                // Barra Horizontal de Criterios de Ordenamiento
+                if (showSortMenu) {
+                    item {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(vertical = 2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            SortOrder.values().forEach { order ->
+                                val isSelected = uiState.sortOrder == order
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(100.dp))
+                                        .background(if (isSelected) CreditiaPrimary else CreditiaSurfaceContainer)
+                                        .border(
+                                            1.dp,
+                                            if (isSelected) CreditiaPrimary else CreditiaSurfaceContainerHigh,
+                                            RoundedCornerShape(100.dp)
                                         )
-                                    }
+                                        .clickable {
+                                            viewModel.setSortOrder(order)
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = order.shortLabel,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                                    )
                                 }
                             }
                         }
@@ -1137,11 +1157,7 @@ fun ConsumosScreen(
                             isSelected = isSelected,
                             isSelectionMode = isSelectionMode,
                             onToggleSelect = {
-                                selectedExpenseIds = if (isSelected) {
-                                    selectedExpenseIds - expense.id
-                                } else {
-                                    selectedExpenseIds + expense.id
-                                }
+                                viewModel.toggleExpenseSelection(expense.id)
                             },
                             onEdit = {
                                 viewModel.startEditExpense(expense)
@@ -1220,9 +1236,9 @@ fun ConsumosScreen(
                         TextButton(
                             onClick = {
                                 if (selectedExpenseIds.size == filteredExpenses.size) {
-                                    selectedExpenseIds = emptySet()
+                                    viewModel.clearExpenseSelection()
                                 } else {
-                                    selectedExpenseIds = filteredExpenses.map { it.id }.toSet()
+                                    viewModel.selectAllExpenses(filteredExpenses.map { it.id }.toSet())
                                 }
                             }
                         ) {
@@ -1232,7 +1248,7 @@ fun ConsumosScreen(
                                 fontWeight = FontWeight.Bold
                             )
                         }
-                        IconButton(onClick = { selectedExpenseIds = emptySet() }) {
+                        IconButton(onClick = { viewModel.clearExpenseSelection() }) {
                             Icon(
                                 imageVector = Icons.Default.Close,
                                 contentDescription = "Cancelar selección",
@@ -1298,7 +1314,7 @@ fun ConsumosScreen(
             onConfirm = { months, monthlyInterestRate ->
                 showMultiDeferDialog = false
                 viewModel.deferMultipleExpenses(selectedExpenses, months, monthlyInterestRate) {
-                    selectedExpenseIds = emptySet()
+                    viewModel.clearExpenseSelection()
                 }
             }
         )
@@ -1738,11 +1754,13 @@ fun ExpenseCardItem(
                     }
 
                     // Miniatura del Comprobante si existe
-                    if (!expense.receiptUri.isNullOrBlank()) {
-                        val imgModel: Any = if (expense.receiptUri.startsWith("/") || expense.receiptUri.startsWith("file://")) {
-                            File(expense.receiptUri.removePrefix("file://"))
+                    val receiptList = remember(expense.receiptUri) { expense.getReceiptUriList() }
+                    if (receiptList.isNotEmpty()) {
+                        val firstUri = receiptList.first()
+                        val imgModel: Any = if (firstUri.startsWith("/") || firstUri.startsWith("file://")) {
+                            File(firstUri.removePrefix("file://"))
                         } else {
-                            expense.receiptUri
+                            firstUri
                         }
                         Box(
                             modifier = Modifier
@@ -1752,7 +1770,7 @@ fun ExpenseCardItem(
                                 .border(1.dp, CreditiaPrimary.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
                                 .clickable {
                                     onReceiptClick?.invoke(
-                                        expense.receiptUri,
+                                        expense.receiptUri ?: firstUri,
                                         expense.establishment,
                                         "${expense.dateString} • $ ${String.format(Locale.US, "%.2f", expense.amount)}"
                                     )
@@ -1764,20 +1782,29 @@ fun ExpenseCardItem(
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier.fillMaxSize()
                             )
-                            // Indicador de zoom en esquina
+                            // Indicador de foto única o múltiple en esquina inferior
                             Box(
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)
                                     .clip(RoundedCornerShape(topStart = 4.dp))
-                                    .background(Color.Black.copy(alpha = 0.65f))
-                                    .padding(2.dp)
+                                    .background(if (receiptList.size > 1) Color(0xFF0284C7).copy(alpha = 0.9f) else Color.Black.copy(alpha = 0.65f))
+                                    .padding(horizontal = 3.dp, vertical = 1.dp)
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.ZoomIn,
-                                    contentDescription = "Ampliar foto",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(11.dp)
-                                )
+                                if (receiptList.size > 1) {
+                                    Text(
+                                        text = "+${receiptList.size}",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.ZoomIn,
+                                        contentDescription = "Ampliar foto",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                }
                             }
                         }
                     }

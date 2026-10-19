@@ -83,7 +83,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -135,18 +137,22 @@ fun AjustesScreen(
     val coroutineScope = rememberCoroutineScope()
 
     val exportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json")
+        contract = ActivityResultContracts.CreateDocument("application/zip")
     ) { uri ->
         if (uri != null) {
-            try {
-                context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                    val json = viewModel.exportDatabaseJson()
-                    outputStream.write(json.toByteArray(Charsets.UTF_8))
-                    outputStream.flush()
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                        viewModel.exportFullBackup(outputStream)
+                    }
+                    withContext(Dispatchers.Main) {
+                        viewModel.showToast("✓ Respaldo completo guardado exitosamente (tarjetas, consumos y fotos)")
+                    }
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        viewModel.showToast("Error al exportar: ${e.localizedMessage}")
+                    }
                 }
-                viewModel.showToast("✓ Respaldo guardado exitosamente en la ubicación seleccionada")
-            } catch (e: Exception) {
-                viewModel.showToast("Error al exportar: ${e.localizedMessage}")
             }
         }
     }
@@ -155,25 +161,23 @@ fun AjustesScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            try {
-                val content = context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                    inputStream.bufferedReader().readText()
-                }
-                if (!content.isNullOrBlank()) {
-                    coroutineScope.launch {
-                        try {
-                            val (cardsCount, expensesCount) = viewModel.restoreDatabaseFromJson(content)
-                            viewModel.showToast("✓ Sistema restaurado y actualizado: $cardsCount tarjetas y $expensesCount consumos")
+            coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                        viewModel.restoreFullBackup(inputStream)
+                        withContext(Dispatchers.Main) {
                             viewModel.selectTab("consumos")
-                        } catch (e: Exception) {
-                            viewModel.showToast("Error: El archivo seleccionado no tiene un formato válido")
+                        }
+                    } ?: run {
+                        withContext(Dispatchers.Main) {
+                            viewModel.showToast("Error: No se pudo abrir el archivo seleccionado")
                         }
                     }
-                } else {
-                    viewModel.showToast("El archivo de respaldo seleccionado está vacío")
+                } catch (e: Exception) {
+                    withContext(Dispatchers.Main) {
+                        viewModel.showToast("Error al restaurar: ${e.localizedMessage ?: "Formato inválido"}")
+                    }
                 }
-            } catch (e: Exception) {
-                viewModel.showToast("Error al leer archivo: ${e.localizedMessage}")
             }
         }
     }
@@ -1615,7 +1619,7 @@ fun AjustesScreen(
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable {
                                         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-                                        exportLauncher.launch("creditia_respaldo_$timestamp.json")
+                                        exportLauncher.launch("creditia_respaldo_$timestamp.zip")
                                     }
                                     .testTag("btn_export_backup")
                             ) {
@@ -1638,13 +1642,13 @@ fun AjustesScreen(
                                         )
                                         Column {
                                             Text(
-                                                text = "Exportar Respaldo Local",
+                                                text = "Exportar Respaldo Completo (ZIP con Fotos)",
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Selecciona la carpeta donde guardar el JSON",
+                                                text = "Guarda tarjetas, consumos y fotos en un paquete comprimido seguro",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -1667,7 +1671,7 @@ fun AjustesScreen(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(10.dp))
                                     .clickable {
-                                        restoreLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                                        restoreLauncher.launch(arrayOf("application/zip", "application/json", "application/octet-stream", "*/*"))
                                     }
                                     .testTag("btn_restore_backup")
                             ) {
@@ -1690,13 +1694,13 @@ fun AjustesScreen(
                                         )
                                         Column {
                                             Text(
-                                                text = "Restaurar Respaldo Local",
+                                                text = "Restaurar Respaldo Local (ZIP o JSON)",
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Selecciona el archivo para actualizar la app",
+                                                text = "Restaura tu base de datos completa con fotos y cuotas diferidas",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -1746,7 +1750,7 @@ fun AjustesScreen(
                                                 color = CreditiaError
                                             )
                                             Text(
-                                                text = "Purga irreversible de transacciones",
+                                                text = "Purga absoluta de tarjetas, consumos, cuotas diferidas y fotos locales",
                                                 fontSize = 11.sp,
                                                 color = CreditiaOnErrorContainer.copy(alpha = 0.8f)
                                             )
