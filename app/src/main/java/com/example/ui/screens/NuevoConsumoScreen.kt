@@ -420,7 +420,9 @@ fun NuevoConsumoScreen(
                                 modifier = Modifier.size(15.dp)
                             )
                             Text(
-                                text = if (editing != null) "Editando Consumo" else "Nuevo Consumo",
+                                text = if (editing != null) {
+                                    if (editing.isDeferredExpense()) "Editando Cuota de Diferido" else "Editando Consumo"
+                                } else "Nuevo Consumo",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -1292,14 +1294,16 @@ fun NuevoConsumoScreen(
                                 modifier = Modifier.size(20.dp)
                             )
                             Text(
-                                text = if (editing != null) "Actualizar Consumo" else "Confirmar y Guardar Consumo",
+                                text = if (editing != null) {
+                                    if (editing.isDeferredExpense()) "Actualizar Cuota y Diferido" else "Actualizar Consumo"
+                                } else "Confirmar y Guardar Consumo",
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold
                             )
                         }
                     }
 
-                    if (editing != null) {
+                    if (editing != null && !editing.isDeferredExpense()) {
                         Button(
                             onClick = { showDeferDialog = true },
                             modifier = Modifier
@@ -1436,7 +1440,7 @@ fun NuevoConsumoScreen(
                 },
                 title = {
                     Text(
-                        text = "¿Guardar cambios en el registro?",
+                        text = if (editing.isDeferredExpense()) "¿Actualizar y reorganizar diferido?" else "¿Guardar cambios en el registro?",
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp
                     )
@@ -1444,7 +1448,10 @@ fun NuevoConsumoScreen(
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(
-                            text = "¿Estás seguro de que deseas guardar las modificaciones realizadas en este consumo?",
+                            text = if (editing.isDeferredExpense())
+                                "Este consumo es parte de un diferido. Al guardar con la fecha $formattedDate, las cuotas del diferido se reorganizarán manteniendo el intervalo mensual a partir de la fecha seleccionada."
+                            else
+                                "¿Estás seguro de que deseas guardar las modificaciones realizadas en este consumo?",
                             fontSize = 14.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -1478,6 +1485,17 @@ fun NuevoConsumoScreen(
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                if (editing.isDeferredExpense()) {
+                                    val defInfo = editing.getDeferredInfo()
+                                    if (defInfo != null) {
+                                        Text(
+                                            text = "• Cuota actual: Cuota ${defInfo.first} de ${defInfo.second} (se sincronizarán las demás)",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = CreditiaPrimary
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

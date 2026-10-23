@@ -798,10 +798,15 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                     dateString = dateString,
                     billingPeriod = billingPeriod,
                     receiptUri = receiptUri ?: existing?.receiptUri,
+                    deferredGroupId = existing?.deferredGroupId,
                     timestamp = existing?.timestamp ?: System.currentTimeMillis()
                 )
-                repository.updateExpense(updated)
-                showToast("Consumo #$seq actualizado")
+                val countUpdated = repository.updateExpenseWithDeferredSync(updated, cutDay)
+                if (countUpdated > 1) {
+                    showToast("✓ Se reorganizaron las $countUpdated cuotas del diferido")
+                } else {
+                    showToast("Consumo #$seq actualizado")
+                }
             } else {
                 val nextSeq = repository.getNextSequenceNumber()
                 val newExpense = ExpenseEntity(
