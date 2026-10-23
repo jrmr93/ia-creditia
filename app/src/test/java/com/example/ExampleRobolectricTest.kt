@@ -93,4 +93,178 @@ class ExampleRobolectricTest {
     assertEquals("test-api-key-gemini", parsed.preferences["gemini_api_key"])
     assertEquals("gemini-3.5-flash", parsed.preferences["gemini_model"])
   }
+
+  @Test
+  fun `test deferred installment reorganization when editing date on cuota 1`() = kotlinx.coroutines.runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(context, com.example.data.local.AppDatabase::class.java)
+      .allowMainThreadQueries()
+      .build()
+    val repo = com.example.data.repository.CreditiaRepository(db.creditCardDao(), db.expenseDao())
+
+    val card = com.example.data.model.CreditCardEntity(
+      id = 1,
+      bankName = "Pichincha",
+      cardName = "Visa",
+      network = "VISA",
+      tier = "GOLD",
+      last4 = "1234",
+      cutDay = 24,
+      payDay = 10
+    )
+    db.creditCardDao().insertCard(card)
+
+    val groupId = "def_test_123"
+    val cuota1 = com.example.data.model.ExpenseEntity(
+      id = 101,
+      sequenceNumber = 1,
+      cardId = 1,
+      establishment = "Tienda Hogar",
+      description = "Refrigeradora (Cuota 1/3)",
+      amount = 300.0,
+      dateString = "2026/09/01",
+      billingPeriod = "Septiembre 2026",
+      deferredGroupId = groupId
+    )
+    val cuota2 = com.example.data.model.ExpenseEntity(
+      id = 102,
+      sequenceNumber = 2,
+      cardId = 1,
+      establishment = "Tienda Hogar",
+      description = "Refrigeradora (Cuota 2/3)",
+      amount = 300.0,
+      dateString = "2026/10/01",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = groupId
+    )
+    val cuota3 = com.example.data.model.ExpenseEntity(
+      id = 103,
+      sequenceNumber = 3,
+      cardId = 1,
+      establishment = "Tienda Hogar",
+      description = "Refrigeradora (Cuota 3/3)",
+      amount = 300.0,
+      dateString = "2026/11/01",
+      billingPeriod = "Noviembre 2026",
+      deferredGroupId = groupId
+    )
+    db.expenseDao().insertExpenses(listOf(cuota1, cuota2, cuota3))
+
+    // Editar Cuota 1 para moverla del 1 de septiembre al 1 de octubre de 2026
+    val editedCuota1 = cuota1.copy(
+      dateString = "2026/10/01",
+      establishment = "Tienda Hogar Central",
+      description = "Refrigeradora Inverter (Cuota 1/3)"
+    )
+
+    val updatedCount = repo.updateExpenseWithDeferredSync(editedCuota1, cutDay = 24)
+    assertEquals(3, updatedCount)
+
+    val updated1 = db.expenseDao().getExpenseById(101)!!
+    val updated2 = db.expenseDao().getExpenseById(102)!!
+    val updated3 = db.expenseDao().getExpenseById(103)!!
+
+    // Verificar Cuota 1
+    assertEquals("2026/10/01", updated1.dateString)
+    assertEquals("Octubre 2026", updated1.billingPeriod)
+    assertEquals("Tienda Hogar Central", updated1.establishment)
+    assertEquals("Refrigeradora Inverter (Cuota 1/3)", updated1.description)
+
+    // Verificar Cuota 2 reorganizada
+    assertEquals("2026/11/01", updated2.dateString)
+    assertEquals("Noviembre 2026", updated2.billingPeriod)
+    assertEquals("Tienda Hogar Central", updated2.establishment)
+    assertEquals("Refrigeradora Inverter (Cuota 2/3)", updated2.description)
+
+    // Verificar Cuota 3 reorganizada
+    assertEquals("2026/12/01", updated3.dateString)
+    assertEquals("Diciembre 2026", updated3.billingPeriod)
+    assertEquals("Tienda Hogar Central", updated3.establishment)
+    assertEquals("Refrigeradora Inverter (Cuota 3/3)", updated3.description)
+
+    db.close()
+  }
+
+  @Test
+  fun `test deferred installment reorganization when editing intermediate cuota 2`() = kotlinx.coroutines.runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(context, com.example.data.local.AppDatabase::class.java)
+      .allowMainThreadQueries()
+      .build()
+    val repo = com.example.data.repository.CreditiaRepository(db.creditCardDao(), db.expenseDao())
+
+    val card = com.example.data.model.CreditCardEntity(
+      id = 1,
+      bankName = "Pichincha",
+      cardName = "Visa",
+      network = "VISA",
+      tier = "GOLD",
+      last4 = "1234",
+      cutDay = 24,
+      payDay = 10
+    )
+    db.creditCardDao().insertCard(card)
+
+    val groupId = "def_test_456"
+    val cuota1 = com.example.data.model.ExpenseEntity(
+      id = 201,
+      sequenceNumber = 1,
+      cardId = 1,
+      establishment = "Sony Store",
+      description = "PlayStation 5 (Cuota 1/3)",
+      amount = 400.0,
+      dateString = "2026/09/01",
+      billingPeriod = "Septiembre 2026",
+      deferredGroupId = groupId
+    )
+    val cuota2 = com.example.data.model.ExpenseEntity(
+      id = 202,
+      sequenceNumber = 2,
+      cardId = 1,
+      establishment = "Sony Store",
+      description = "PlayStation 5 (Cuota 2/3)",
+      amount = 400.0,
+      dateString = "2026/10/01",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = groupId
+    )
+    val cuota3 = com.example.data.model.ExpenseEntity(
+      id = 203,
+      sequenceNumber = 3,
+      cardId = 1,
+      establishment = "Sony Store",
+      description = "PlayStation 5 (Cuota 3/3)",
+      amount = 400.0,
+      dateString = "2026/11/01",
+      billingPeriod = "Noviembre 2026",
+      deferredGroupId = groupId
+    )
+    db.expenseDao().insertExpenses(listOf(cuota1, cuota2, cuota3))
+
+    // Editar Cuota 2 para moverla del 1 de octubre al 1 de noviembre de 2026
+    val editedCuota2 = cuota2.copy(
+      dateString = "2026/11/01"
+    )
+
+    val updatedCount = repo.updateExpenseWithDeferredSync(editedCuota2, cutDay = 24)
+    assertEquals(3, updatedCount)
+
+    val updated1 = db.expenseDao().getExpenseById(201)!!
+    val updated2 = db.expenseDao().getExpenseById(202)!!
+    val updated3 = db.expenseDao().getExpenseById(203)!!
+
+    // Cuota 1 ajustada a 2026/10/01
+    assertEquals("2026/10/01", updated1.dateString)
+    assertEquals("Octubre 2026", updated1.billingPeriod)
+
+    // Cuota 2 fijada a 2026/11/01
+    assertEquals("2026/11/01", updated2.dateString)
+    assertEquals("Noviembre 2026", updated2.billingPeriod)
+
+    // Cuota 3 ajustada a 2026/12/01
+    assertEquals("2026/12/01", updated3.dateString)
+    assertEquals("Diciembre 2026", updated3.billingPeriod)
+
+    db.close()
+  }
 }

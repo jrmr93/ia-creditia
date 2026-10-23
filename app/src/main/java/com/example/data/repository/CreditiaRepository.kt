@@ -40,6 +40,115 @@ class CreditiaRepository(
 
     suspend fun updateExpense(expense: ExpenseEntity) = expenseDao.updateExpense(expense)
 
+    /**
+     * Updates an expense. If the expense is part of a deferred consumption group,
+     * reorganizes all installments in the group:
+     * - Adjusts dates for all installments relative to the edited installment, maintaining monthly intervals.
+     * - Recalculates each installment's billingPeriod based on its new date and the card's cutoff day.
+     * - Synchronizes establishment, base description (preserving Cuota X/Y), cardId, and deferredGroupId.
+     * Returns the number of updated installments.
+     */
+    suspend fun updateExpenseWithDeferredSync(
+        updatedExpense: ExpenseEntity,
+        cutDay: Int
+    ): Int {
+        val originalInDb = expenseDao.getExpenseById(updatedExpense.id)
+        val group = if (!updatedExpense.deferredGroupId.isNullOrBlank()) {
+            expenseDao.getExpensesByDeferredGroupId(updatedExpense.deferredGroupId)
+        } else if (originalInDb != null && !originalInDb.deferredGroupId.isNullOrBlank()) {
+            expenseDao.getExpensesByDeferredGroupId(originalInDb.deferredGroupId)
+        } else if (originalInDb != null) {
+            getDeferredInstallments(originalInDb)
+        } else {
+            getDeferredInstallments(updatedExpense)
+        }
+
+        if (group.size <= 1) {
+            expenseDao.updateExpense(updatedExpense)
+            return 1
+        }
+
+        // Sort group by installment number
+        val sortedGroup = group.sortedWith(
+            compareBy(
+                { it.getDeferredInfo()?.first ?: it.sequenceNumber },
+                { it.dateString }
+            )
+        )
+
+        val sortedWithIndex = sortedGroup.mapIndexed { index, expense ->
+            val info = expense.getDeferredInfo()
+            val cuotaNum = info?.first ?: (index + 1)
+            val total = info?.second ?: sortedGroup.size
+            Triple(expense, cuotaNum, total)
+        }
+
+        val targetTriple = sortedWithIndex.find { it.first.id == updatedExpense.id }
+        val editedCuota = targetTriple?.second ?: 1
+        val totalInstallments = sortedWithIndex.maxOfOrNull { it.third } ?: sortedGroup.size
+
+        val dateParts = updatedExpense.dateString.split("/")
+        val targetYear = dateParts.getOrNull(0)?.toIntOrNull() ?: 2026
+        val targetMonth = (dateParts.getOrNull(1)?.toIntOrNull() ?: 10) - 1 // 0-based
+        val targetDay = dateParts.getOrNull(2)?.toIntOrNull() ?: 1
+
+        val cleanBaseDesc = updatedExpense.description
+            .replace(Regex("""\s*\(Cuota\s*\d+/\d+\)\s*$"""), "")
+            .trim()
+        val updatedEstablishment = updatedExpense.establishment.ifBlank { "Consumo General" }
+        val effectiveGroupId = updatedExpense.deferredGroupId
+            ?: originalInDb?.deferredGroupId
+            ?: sortedGroup.firstNotNullOfOrNull { it.deferredGroupId }
+            ?: "def_${System.currentTimeMillis()}"
+
+        val toUpdate = sortedWithIndex.map { (installmentExpense, cuotaNum, _) ->
+            val monthOffset = cuotaNum - editedCuota
+            val cal = Calendar.getInstance()
+            cal.set(Calendar.YEAR, targetYear)
+            cal.set(Calendar.MONTH, targetMonth + monthOffset)
+            val maxDay = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+            cal.set(Calendar.DAY_OF_MONTH, targetDay.coerceAtMost(maxDay))
+
+            val installmentDateStr = String.format(
+                Locale.US,
+                "%04d/%02d/%02d",
+                cal.get(Calendar.YEAR),
+                cal.get(Calendar.MONTH) + 1,
+                cal.get(Calendar.DAY_OF_MONTH)
+            )
+            val installmentBillingPeriod = calculateBillingPeriod(installmentDateStr, cutDay)
+            val newDesc = if (cleanBaseDesc.isNotBlank()) {
+                "$cleanBaseDesc (Cuota $cuotaNum/$totalInstallments)"
+            } else {
+                "Consumo (Cuota $cuotaNum/$totalInstallments)"
+            }
+
+            if (installmentExpense.id == updatedExpense.id) {
+                updatedExpense.copy(
+                    dateString = installmentDateStr,
+                    billingPeriod = installmentBillingPeriod,
+                    establishment = updatedEstablishment,
+                    description = newDesc,
+                    cardId = updatedExpense.cardId,
+                    deferredGroupId = effectiveGroupId
+                )
+            } else {
+                installmentExpense.copy(
+                    dateString = installmentDateStr,
+                    billingPeriod = installmentBillingPeriod,
+                    establishment = updatedEstablishment,
+                    description = newDesc,
+                    cardId = updatedExpense.cardId,
+                    deferredGroupId = effectiveGroupId,
+                    receiptUri = updatedExpense.receiptUri ?: installmentExpense.receiptUri
+                )
+            }
+        }
+
+        toUpdate.forEach { expenseDao.updateExpense(it) }
+        return toUpdate.size
+    }
+
     suspend fun getExpenseById(id: Long): ExpenseEntity? = expenseDao.getExpenseById(id)
     suspend fun getExpensesListByCard(cardId: Long): List<ExpenseEntity> = expenseDao.getExpensesListByCard(cardId)
     suspend fun deleteExpense(expense: ExpenseEntity) = expenseDao.deleteExpense(expense)
