@@ -195,13 +195,18 @@ fun NuevoConsumoScreen(
     val allExpenses by viewModel.allExpenses.collectAsStateWithLifecycle()
 
     var currentLogoUrl by remember {
-        mutableStateOf(editing?.establishmentLogoUrl ?: viewModel.getRememberedLogo(editing?.establishment ?: ""))
+        val initial = if (editing != null) {
+            editing.establishmentLogoUrl?.takeIf { !it.contains("|") } ?: viewModel.getRememberedLogo(editing.establishment)?.takeIf { !it.contains("|") }
+        } else null
+        mutableStateOf(initial)
     }
 
     LaunchedEffect(establishment) {
-        val rem = viewModel.getRememberedLogo(establishment)
-        if (rem != null && currentLogoUrl != rem) {
-            currentLogoUrl = rem
+        if (!establishment.contains(" + ") && !establishment.startsWith("Nota de Crédito", ignoreCase = true)) {
+            val rem = viewModel.getRememberedLogo(establishment)?.takeIf { !it.contains("|") }
+            if (rem != null && currentLogoUrl != rem) {
+                currentLogoUrl = rem
+            }
         }
     }
 
@@ -211,7 +216,7 @@ fun NuevoConsumoScreen(
             if (path.isEmpty()) {
                 currentLogoUrl = null
             } else {
-                currentLogoUrl = path
+                currentLogoUrl = path.takeIf { !it.contains("|") }
             }
             viewModel.clearLastAppliedLogoPath()
         }
@@ -219,8 +224,16 @@ fun NuevoConsumoScreen(
 
     val knownEstablishments = remember(allExpenses) {
         allExpenses
+            .filter { exp ->
+                !exp.isDeferredInstallment() &&
+                !exp.isDeferredExpense() &&
+                !exp.isCreditNote() &&
+                !exp.establishment.startsWith("Nota de Crédito", ignoreCase = true) &&
+                !exp.establishment.contains(" + ") &&
+                (exp.establishmentLogoUrl == null || !exp.establishmentLogoUrl.contains("|"))
+            }
             .map { it.establishment.trim() }
-            .filter { it.isNotBlank() && !it.startsWith("Nota de Crédito", ignoreCase = true) }
+            .filter { it.isNotBlank() }
             .distinctBy { it.lowercase(Locale.ROOT) }
     }
 
@@ -1657,7 +1670,15 @@ fun NuevoConsumoScreen(
                                 )
 
                                 suggestions.forEach { sugName ->
-                                    val sugLogo = viewModel.getRememberedLogo(sugName)
+                                    val sugLogo = (viewModel.getRememberedLogo(sugName) ?: allExpenses.firstOrNull { exp ->
+                                        !exp.isDeferredInstallment() &&
+                                        !exp.isDeferredExpense() &&
+                                        !exp.isCreditNote() &&
+                                        exp.establishment.equals(sugName, ignoreCase = true) &&
+                                        !exp.establishmentLogoUrl.isNullOrBlank() &&
+                                        !exp.establishmentLogoUrl.contains("|")
+                                    }?.establishmentLogoUrl)?.takeIf { !it.contains("|") }
+
                                     Surface(
                                         shape = RoundedCornerShape(8.dp),
                                         color = CreditiaSurfaceContainerLow,
@@ -1667,7 +1688,7 @@ fun NuevoConsumoScreen(
                                             .clip(RoundedCornerShape(8.dp))
                                             .clickable {
                                                 establishment = sugName
-                                                if (sugLogo != null) {
+                                                if (sugLogo != null && !sugLogo.contains("|")) {
                                                     currentLogoUrl = sugLogo
                                                 }
                                             }

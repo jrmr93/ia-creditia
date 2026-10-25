@@ -129,12 +129,22 @@ class CreditiaViewModel @JvmOverloads constructor(
     }
 
     fun getRememberedLogo(establishment: String): String? {
+        if (establishment.contains(" + ") || establishment.startsWith("Nota de Crédito", ignoreCase = true)) {
+            return null
+        }
         val key = normalizeEstablishmentKey(establishment)
         if (key.isBlank()) return null
-        return logoPrefs.getString(key, null)?.takeIf { it.isNotBlank() }
+        val stored = logoPrefs.getString(key, null)?.takeIf { it.isNotBlank() }
+        // Los logos sumados nunca deben ser devueltos como logo recordado de un comercio
+        if (stored != null && stored.contains("|")) return null
+        return stored
     }
 
     fun rememberEstablishmentLogo(establishment: String, logoPath: String) {
+        // Los logos sumados o de registros combinados/diferidos/notas de crédito nunca deben recordarse
+        if (logoPath.contains("|") || establishment.contains(" + ") || establishment.startsWith("Nota de Crédito", ignoreCase = true)) {
+            return
+        }
         val key = normalizeEstablishmentKey(establishment)
         if (key.isBlank() || logoPath.isBlank()) return
         logoPrefs.edit().putString(key, logoPath).apply()
@@ -229,12 +239,25 @@ class CreditiaViewModel @JvmOverloads constructor(
 
         // Cache remembered logos from existing expenses in database
         viewModelScope.launch {
+            // Limpiar cualquier logo sumado o comercio combinado que haya quedado previamente en preferencias
+            val badKeys = logoPrefs.all.filter { (k, v) ->
+                k.contains("+") || k.startsWith("nota de crédito") || (v as? String)?.contains("|") == true
+            }.keys
+            if (badKeys.isNotEmpty()) {
+                val cleanupEditor = logoPrefs.edit()
+                badKeys.forEach { cleanupEditor.remove(it) }
+                cleanupEditor.apply()
+            }
+
             allExpenses.collect { expenses ->
                 val editor = logoPrefs.edit()
                 var changed = false
                 expenses.forEach { exp ->
+                    // Excluir cuotas diferidas, notas de crédito, comercios combinados y logos sumados
+                    if (exp.isDeferredInstallment() || exp.isDeferredExpense() || exp.isCreditNote()) return@forEach
+                    if (exp.establishment.contains(" + ") || exp.establishment.startsWith("Nota de Crédito", ignoreCase = true)) return@forEach
                     val logo = exp.establishmentLogoUrl
-                    if (!logo.isNullOrBlank() && exp.establishment.isNotBlank()) {
+                    if (!logo.isNullOrBlank() && !logo.contains("|") && exp.establishment.isNotBlank()) {
                         val key = normalizeEstablishmentKey(exp.establishment)
                         if (!logoPrefs.contains(key)) {
                             editor.putString(key, logo)
@@ -1349,7 +1372,7 @@ class CreditiaViewModel @JvmOverloads constructor(
 
             // Auto-asignar logo recordado si no se especificó uno explícito
             val effectiveLogo = establishmentLogoUrl ?: getRememberedLogo(effectiveEstablishment)
-            if (!effectiveLogo.isNullOrBlank()) {
+            if (!effectiveLogo.isNullOrBlank() && !effectiveLogo.contains("|") && !effectiveEstablishment.contains(" + ") && !effectiveEstablishment.startsWith("Nota de Crédito", ignoreCase = true)) {
                 rememberEstablishmentLogo(effectiveEstablishment, effectiveLogo)
             }
 
@@ -1559,7 +1582,7 @@ class CreditiaViewModel @JvmOverloads constructor(
                 val card = _uiState.value.cards.find { it.id == cardId } ?: _uiState.value.selectedCard
                 val cutDay = card?.cutDay ?: 24
                 val effectiveLogo = establishmentLogoUrl ?: getRememberedLogo(establishment)
-                if (!effectiveLogo.isNullOrBlank()) {
+                if (!effectiveLogo.isNullOrBlank() && !effectiveLogo.contains("|") && !establishment.contains(" + ") && !establishment.startsWith("Nota de Crédito", ignoreCase = true)) {
                     rememberEstablishmentLogo(establishment, effectiveLogo)
                 }
                 repository.createDirectDeferred(

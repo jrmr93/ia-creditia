@@ -1,7 +1,16 @@
 package com.example
 
+import android.app.Application
 import android.content.Context
+import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.local.AppDatabase
+import com.example.data.model.CreditCardEntity
+import com.example.data.model.ExpenseEntity
+import com.example.data.repository.CreditiaRepository
+import com.example.ui.viewmodel.CreditiaViewModel
+import kotlinx.coroutines.test.runTest
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -529,5 +538,109 @@ class ExampleRobolectricTest {
       db.close()
     }
   }
+
+  @Test
+  fun test_summedLogosAndDeferredInstallmentsAreNotRememberedNorSuggested() = runTest {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+      .allowMainThreadQueries()
+      .build()
+    val repo = CreditiaRepository(db.creditCardDao(), db.expenseDao())
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val vm = CreditiaViewModel(app, repo)
+
+    try {
+      // 1. Crear tarjeta y 2 consumos individuales con logos independientes
+      val cardId = repo.insertCard(
+        CreditCardEntity(
+          bankName = "Banco",
+          cardName = "Visa Gold",
+          network = "VISA",
+          last4 = "1234",
+          cutDay = 24,
+          payDay = 15
+        )
+      )
+      val exp1 = ExpenseEntity(
+        sequenceNumber = 1,
+        cardId = cardId,
+        establishment = "Supermaxi",
+        description = "Compras del mes",
+        amount = 120.0,
+        dateString = "2026/10/10",
+        billingPeriod = "Octubre 2026",
+        establishmentLogoUrl = "/data/user/0/com.aistudio.applet.shptdr/files/logos/supermaxi.png"
+      )
+      val exp2 = ExpenseEntity(
+        sequenceNumber = 2,
+        cardId = cardId,
+        establishment = "Zara",
+        description = "Ropa",
+        amount = 80.0,
+        dateString = "2026/10/12",
+        billingPeriod = "Octubre 2026",
+        establishmentLogoUrl = "/data/user/0/com.aistudio.applet.shptdr/files/logos/zara.png"
+      )
+      val id1 = repo.insertExpense(exp1)
+      val id2 = repo.insertExpense(exp2)
+      val insertedExp1 = exp1.copy(id = id1)
+      val insertedExp2 = exp2.copy(id = id2)
+
+      // 2. Ejecutar diferido unificado de ambos consumos
+      val deferredResults = repo.deferMultipleExpenses(
+        selectedExpenses = listOf(insertedExp1, insertedExp2),
+        months = 3,
+        monthlyInterestRate = 0.0,
+        cutDay = 24
+      )
+      org.junit.Assert.assertTrue("Debe crear nota de crédito y cuotas", deferredResults.isNotEmpty())
+
+      // 3. Verificar que getRememberedLogo nunca devuelve logos sumados ni comercios combinados
+      org.junit.Assert.assertNull(
+        "Un comercio combinado con '+' no debe tener logo recordado",
+        vm.getRememberedLogo("Supermaxi + Zara")
+      )
+      org.junit.Assert.assertNull(
+        "Una nota de crédito no debe tener logo recordado",
+        vm.getRememberedLogo("Nota de Crédito - Supermaxi + Zara")
+      )
+
+      // 4. Intentar guardar manualmente un logo sumado con '|' debe ser rechazado
+      vm.rememberEstablishmentLogo("Supermaxi + Zara", "/path/1.png|/path/2.png")
+      org.junit.Assert.assertNull(
+        "No debe almacenarse un logo sumado con '|'",
+        vm.getRememberedLogo("Supermaxi + Zara")
+      )
+
+      vm.rememberEstablishmentLogo("Nuevo Comercio", "/path/a.png|/path/b.png")
+      org.junit.Assert.assertNull(
+        "No debe almacenarse un logo con múltiples rutas",
+        vm.getRememberedLogo("Nuevo Comercio")
+      )
+
+      // 5. Verificar que el filtrado de knownEstablishments para sugerencias excluye cuotas diferidas y combinadas
+      val allExpenses = repo.getAllExpensesList()
+      val filteredEstablishments = allExpenses
+        .filter { exp ->
+          !exp.isDeferredInstallment() &&
+          !exp.isDeferredExpense() &&
+          !exp.isCreditNote() &&
+          !exp.establishment.startsWith("Nota de Crédito", ignoreCase = true) &&
+          !exp.establishment.contains(" + ") &&
+          (exp.establishmentLogoUrl == null || !exp.establishmentLogoUrl.contains("|"))
+        }
+        .map { it.establishment.trim() }
+        .filter { it.isNotBlank() }
+        .distinctBy { it.lowercase(Locale.ROOT) }
+
+      org.junit.Assert.assertTrue("Debe contener Supermaxi", filteredEstablishments.contains("Supermaxi"))
+      org.junit.Assert.assertTrue("Debe contener Zara", filteredEstablishments.contains("Zara"))
+      org.junit.Assert.assertFalse("No debe contener Supermaxi + Zara", filteredEstablishments.contains("Supermaxi + Zara"))
+      org.junit.Assert.assertFalse("No debe contener notas de crédito", filteredEstablishments.any { it.startsWith("Nota de Crédito") })
+    } finally {
+      db.close()
+    }
+  }
 }
+
 
