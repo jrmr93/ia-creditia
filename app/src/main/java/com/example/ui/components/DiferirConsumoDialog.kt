@@ -84,6 +84,7 @@ fun DiferirConsumoDialog(
     cardName: String,
     repository: CreditiaRepository,
     onDismiss: () -> Unit,
+    periodResolver: ((String) -> String)? = null,
     onConfirm: (months: Int, monthlyInterestRate: Double, startDateString: String) -> Unit
 ) {
     val context = LocalContext.current
@@ -112,7 +113,8 @@ fun DiferirConsumoDialog(
             months = effectiveMonths,
             monthlyInterestRate = effectiveRate,
             startDateString = deferDateString,
-            cutDay = cutDay
+            cutDay = cutDay,
+            periodResolver = periodResolver
         )
     }
 
@@ -733,6 +735,7 @@ fun DiferirConsumoDialog(
     cardName: String,
     repository: CreditiaRepository,
     onDismiss: () -> Unit,
+    periodResolver: ((String) -> String)? = null,
     onConfirm: (months: Int, monthlyInterestRate: Double) -> Unit
 ) = DiferirConsumoDialog(
     amount = amount,
@@ -742,6 +745,7 @@ fun DiferirConsumoDialog(
     cardName = cardName,
     repository = repository,
     onDismiss = onDismiss,
+    periodResolver = periodResolver,
     onConfirm = { months, rate, _ -> onConfirm(months, rate) }
 )
 

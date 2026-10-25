@@ -472,7 +472,7 @@ fun NuevoConsumoScreen(
 
     val formattedDate = String.format(Locale.US, "%04d/%02d/%02d", selectedYear, selectedMonth, selectedDay)
     val cutDay = selectedCard?.cutDay ?: 24
-    val billingPeriod = viewModel.repository.calculateBillingPeriod(formattedDate, cutDay)
+    val billingPeriod = viewModel.getBillingPeriodForDate(selectedCard?.id, formattedDate, cutDay)
     val cycleRange = viewModel.getBillingCycleRange(selectedCard?.id, billingPeriod, cutDay)
 
     val parsedAmount = amountString.toDoubleOrNull() ?: 0.0
@@ -488,14 +488,15 @@ fun NuevoConsumoScreen(
         deferredInterestRateInput.toDoubleOrNull() ?: 0.0
     }
 
-    val directInstallmentPlan = remember(parsedAmount, effectiveDirectMonths, effectiveDirectRate, formattedDate, cutDay) {
+    val directInstallmentPlan = remember(parsedAmount, effectiveDirectMonths, effectiveDirectRate, formattedDate, cutDay, selectedCard?.id) {
         if (parsedAmount > 0.0) {
             viewModel.repository.calculateInstallmentPlan(
                 amount = parsedAmount,
                 months = effectiveDirectMonths,
                 monthlyInterestRate = effectiveDirectRate,
                 startDateString = formattedDate,
-                cutDay = cutDay
+                cutDay = cutDay,
+                periodResolver = { dStr -> viewModel.getBillingPeriodForDate(selectedCard?.id, dStr, cutDay) }
             )
         } else {
             emptyList()
@@ -2570,6 +2571,7 @@ fun NuevoConsumoScreen(
                 cutDay = cutDay,
                 cardName = card?.cardName ?: "Tarjeta",
                 repository = viewModel.repository,
+                periodResolver = { dStr -> viewModel.getBillingPeriodForDate(card?.id, dStr, cutDay) },
                 onDismiss = { showDeferDialog = false },
                 onConfirm = { months, monthlyInterestRate, customStartDate ->
                     showDeferDialog = false

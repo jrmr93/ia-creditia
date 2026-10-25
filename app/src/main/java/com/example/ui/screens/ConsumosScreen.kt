@@ -1634,6 +1634,7 @@ fun ConsumosScreen(
             cutDay = cutDay,
             cardName = card?.cardName ?: "Tarjeta",
             repository = viewModel.repository,
+            periodResolver = { dStr -> viewModel.getBillingPeriodForDate(card?.id, dStr, cutDay) },
             onDismiss = { showMultiDeferDialog = false },
             onConfirm = { months, monthlyInterestRate, customStartDate ->
                 showMultiDeferDialog = false
