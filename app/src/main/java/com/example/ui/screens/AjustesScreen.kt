@@ -146,7 +146,7 @@ fun AjustesScreen(
                         viewModel.exportFullBackup(outputStream)
                     }
                     withContext(Dispatchers.Main) {
-                        viewModel.showToast("✓ Respaldo completo guardado exitosamente (tarjetas, consumos, configuración y fotos)")
+                        viewModel.showToast("✓ Respaldo completo guardado exitosamente (tarjetas, consumos, configuración, comprobantes y logos)")
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
@@ -1642,13 +1642,13 @@ fun AjustesScreen(
                                         )
                                         Column {
                                             Text(
-                                                text = "Exportar Respaldo Completo (ZIP con Fotos)",
+                                                text = "Exportar Respaldo Local Completo (ZIP)",
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Guarda tarjetas, consumos, configuración y fotos en un paquete comprimido seguro",
+                                                text = "Guarda absolutamente toda la información: tarjetas, consumos, comprobantes, fotos de logos, fechas y configuración",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -1700,7 +1700,7 @@ fun AjustesScreen(
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Restaura tu base de datos completa con configuración, fotos y cuotas diferidas",
+                                                text = "Restaura absolutamente toda la información: tarjetas, consumos, comprobantes, fotos de logos, fechas y configuración",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -1750,7 +1750,7 @@ fun AjustesScreen(
                                                 color = CreditiaError
                                             )
                                             Text(
-                                                text = "Purga absoluta de tarjetas, consumos, cuotas diferidas y fotos locales",
+                                                text = "Purga absoluta de tarjetas, consumos, comprobantes, fotos de logos, fechas y toda la información",
                                                 fontSize = 11.sp,
                                                 color = CreditiaOnErrorContainer.copy(alpha = 0.8f)
                                             )
@@ -1935,7 +1935,7 @@ fun AjustesScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "Se eliminará absolutamente todo: todas las tarjetas de crédito configuradas y todos los registros contables locales en SQLite. Esta acción no se puede deshacer.",
+                        text = "Se eliminará absolutamente toda la información: todas las tarjetas de crédito, todos los consumos, cuotas diferidas, fotos de comprobantes, fotos de logos de establecimientos y fechas personalizadas de corte y pago. Esta acción no se puede deshacer.",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

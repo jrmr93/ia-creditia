@@ -325,5 +325,209 @@ class ExampleRobolectricTest {
     org.junit.Assert.assertFalse(vm.uiState.value.isSelectionMode)
     org.junit.Assert.assertTrue(vm.uiState.value.selectedExpenseIds.isEmpty())
   }
+
+  @Test
+  fun `test full backup export and restore includes all logos, custom cut dates, payment limits, and data`() = kotlinx.coroutines.runBlocking {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(app, com.example.data.local.AppDatabase::class.java)
+      .allowMainThreadQueries()
+      .build()
+    val repo = com.example.data.repository.CreditiaRepository(db.creditCardDao(), db.expenseDao())
+    val vm = com.example.ui.viewmodel.CreditiaViewModel(app, repo)
+    val prefs = app.getSharedPreferences("creditia_secure_prefs", Context.MODE_PRIVATE)
+    val logoPrefs = app.getSharedPreferences("creditia_establishment_logos", Context.MODE_PRIVATE)
+
+    try {
+      // 1. Crear fotos de comprobante y logo en disco
+      val receiptsDir = com.example.util.ReceiptStorageUtil.getReceiptsDir(app)
+      val dummyReceipt = java.io.File(receiptsDir, "receipt_test_full.jpg").apply {
+        writeText("dummy receipt content")
+      }
+
+      val logosDir = com.example.util.LogoStorageUtil.getLogosDir(app)
+      val dummyLogo = java.io.File(logosDir, "logo_starbucks_test.png").apply {
+        writeText("dummy logo content")
+      }
+
+      // 2. Configurar tarjeta y consumo con logo y comprobante
+      val card = com.example.data.model.CreditCardEntity(
+        id = 15,
+        bankName = "INTERBANK",
+        cardName = "Visa Platinum",
+        network = "VISA",
+        tier = "PLATINUM",
+        last4 = "7777",
+        cutDay = 24,
+        payDay = 18,
+        payBusinessDays = 15,
+        cardColorTheme = "emerald",
+        creditLimit = 12000.0,
+        isDefault = true
+      )
+      val cardId = vm.repository.insertCard(card)
+
+      val expense = com.example.data.model.ExpenseEntity(
+        id = 100,
+        cardId = cardId,
+        sequenceNumber = 1,
+        establishment = "Starbucks",
+        description = "Café Latte",
+        amount = 18.50,
+        dateString = "2026/10/20",
+        billingPeriod = "Noviembre 2026",
+        receiptUri = dummyReceipt.absolutePath,
+        establishmentLogoUrl = dummyLogo.absolutePath,
+        timestamp = System.currentTimeMillis()
+      )
+      vm.repository.insertExpense(expense)
+
+      // 3. Configurar fechas personalizadas de corte y pago máximo en preferencias
+      vm.setCustomCutDate(cardId, "Noviembre 2026", "2026/11/22")
+      vm.setCustomPaymentLimitDate(cardId, "Noviembre 2026", "2026/12/16")
+      vm.setCustomBillingCycleRange(cardId, "Noviembre 2026", "2026/10/25 - 2026/11/22")
+      vm.rememberEstablishmentLogo("Starbucks", dummyLogo.absolutePath)
+
+      assertEquals("2026/11/22", vm.getCustomCutDate(cardId, "Noviembre 2026"))
+      assertEquals("2026/12/16", vm.getCustomPaymentLimitDate(cardId, "Noviembre 2026"))
+      assertEquals(dummyLogo.absolutePath, vm.getRememberedLogo("Starbucks"))
+
+      // 4. Exportar respaldo completo ZIP
+      val outputStream = java.io.ByteArrayOutputStream()
+      vm.exportFullBackup(outputStream)
+      val zipBytes = outputStream.toByteArray()
+      org.junit.Assert.assertTrue("El archivo ZIP de respaldo completo no debe estar vacío", zipBytes.isNotEmpty())
+
+      // 5. Eliminar comprobantes, logos, base de datos y preferencias locales (simular instalación limpia)
+      com.example.util.ReceiptStorageUtil.deleteAllReceiptFiles(app)
+      com.example.util.LogoStorageUtil.deleteAllLogoFiles(app)
+      vm.repository.clearAllData()
+      logoPrefs.edit().clear().apply()
+      prefs.edit().clear().apply()
+      org.junit.Assert.assertFalse("El comprobante debe haberse borrado", dummyReceipt.exists())
+      org.junit.Assert.assertFalse("El logo debe haberse borrado", dummyLogo.exists())
+
+      // 6. Restaurar respaldo completo
+      val inputStream = java.io.ByteArrayInputStream(zipBytes)
+      val triple = vm.restoreFullBackup(inputStream)
+
+      // Verificar cantidad de tarjetas y consumos restaurados
+      assertEquals(1, triple.first)
+      assertEquals(1, triple.second)
+      org.junit.Assert.assertTrue("Fotos y logos deben estar incluidos", triple.third >= 2)
+
+      // 7. Verificar que el archivo del comprobante y del logotipo se restauraron en almacenamiento interno
+      val restoredReceipt = java.io.File(receiptsDir, "receipt_test_full.jpg")
+      val restoredLogo = java.io.File(logosDir, "logo_starbucks_test.png")
+      org.junit.Assert.assertTrue("El comprobante debe existir tras la restauración", restoredReceipt.exists())
+      org.junit.Assert.assertTrue("El logotipo debe existir tras la restauración", restoredLogo.exists())
+
+      // 8. Verificar que los consumos tienen los paths apuntando a los archivos restaurados
+      val allRestoredExpenses = vm.repository.getAllExpensesList()
+      assertEquals(1, allRestoredExpenses.size)
+      val restoredExpense = allRestoredExpenses[0]
+      assertEquals(restoredReceipt.absolutePath, restoredExpense.receiptUri)
+      assertEquals(restoredLogo.absolutePath, restoredExpense.establishmentLogoUrl)
+
+      // 9. Verificar que las fechas de corte, rangos y fechas máximas de pago personalizadas se restauraron
+      val restoredCard = vm.repository.getAllCardsList()[0]
+      assertEquals("2026/11/22", vm.getCustomCutDate(restoredCard.id, "Noviembre 2026"))
+      assertEquals("2026/12/16", vm.getCustomPaymentLimitDate(restoredCard.id, "Noviembre 2026"))
+      assertEquals("2026/10/25 - 2026/11/22", vm.getCustomBillingCycleRange(restoredCard.id, "Noviembre 2026"))
+
+      // 10. Verificar catálogo de logos recordados restaurado
+      assertEquals(restoredLogo.absolutePath, vm.getRememberedLogo("Starbucks"))
+    } finally {
+      db.close()
+    }
+  }
+
+  @Test
+  fun `test confirmClearDb deletes absolutely everything including logos, receipts, and dates`() = kotlinx.coroutines.runBlocking {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val db = androidx.room.Room.inMemoryDatabaseBuilder(app, com.example.data.local.AppDatabase::class.java)
+      .allowMainThreadQueries()
+      .build()
+    val repo = com.example.data.repository.CreditiaRepository(db.creditCardDao(), db.expenseDao())
+    val vm = com.example.ui.viewmodel.CreditiaViewModel(app, repo)
+
+    try {
+      // 1. Crear fotos de comprobante y logo
+      val receiptsDir = com.example.util.ReceiptStorageUtil.getReceiptsDir(app)
+      val receiptFile = java.io.File(receiptsDir, "receipt_to_delete.jpg").apply { writeText("receipt") }
+
+      val logosDir = com.example.util.LogoStorageUtil.getLogosDir(app)
+      val logoFile = java.io.File(logosDir, "logo_to_delete.png").apply { writeText("logo") }
+
+      // 2. Insertar tarjeta, consumo, fechas personalizadas y logo recordado
+      val card = com.example.data.model.CreditCardEntity(
+        id = 30,
+        bankName = "BBVA",
+        cardName = "Visa Signature",
+        network = "VISA",
+        tier = "SIGNATURE",
+        last4 = "1234",
+        cutDay = 20,
+        payDay = 15,
+        payBusinessDays = 15,
+        cardColorTheme = "blue",
+        creditLimit = 5000.0,
+        isDefault = true
+      )
+      val cardId = vm.repository.insertCard(card)
+      vm.repository.insertExpense(com.example.data.model.ExpenseEntity(
+        id = 300,
+        cardId = cardId,
+        sequenceNumber = 1,
+        establishment = "Zara",
+        description = "Ropa",
+        amount = 120.0,
+        dateString = "2026/10/10",
+        billingPeriod = "Octubre 2026",
+        receiptUri = receiptFile.absolutePath,
+        establishmentLogoUrl = logoFile.absolutePath,
+        timestamp = System.currentTimeMillis()
+      ))
+      vm.setCustomCutDate(cardId, "Octubre 2026", "2026/10/18")
+      vm.setCustomPaymentLimitDate(cardId, "Octubre 2026", "2026/11/12")
+      vm.setCustomBillingCycleRange(cardId, "Octubre 2026", "2026/09/21 - 2026/10/18")
+      vm.rememberEstablishmentLogo("Zara", logoFile.absolutePath)
+
+      org.junit.Assert.assertTrue(receiptFile.exists())
+      org.junit.Assert.assertTrue(logoFile.exists())
+      org.junit.Assert.assertNotNull(vm.getRememberedLogo("Zara"))
+      org.junit.Assert.assertNotNull(vm.getCustomCutDate(cardId, "Octubre 2026"))
+
+      // 3. Ejecutar Limpiar Base de Datos Local
+      vm.clearLocalDatabase()
+
+      // 4. Verificar que se borró absolutamente todo:
+      // a. Comprobantes y logos en disco
+      org.junit.Assert.assertFalse("El comprobante debe ser eliminado", receiptFile.exists())
+      org.junit.Assert.assertFalse("La foto del logo debe ser eliminada", logoFile.exists())
+      assertEquals(0, com.example.util.ReceiptStorageUtil.getReceiptsDir(app).listFiles()?.size ?: 0)
+      assertEquals(0, com.example.util.LogoStorageUtil.getAllLogoFiles(app).size)
+
+      // b. Base de datos Room
+      assertEquals(0, vm.repository.getAllCardsList().size)
+      assertEquals(0, vm.repository.getAllExpensesList().size)
+
+      // c. Logos recordados
+      org.junit.Assert.assertNull(vm.getRememberedLogo("Zara"))
+
+      // d. Fechas personalizadas de corte, pago y rangos
+      org.junit.Assert.assertNull(vm.getCustomCutDate(cardId, "Octubre 2026"))
+      org.junit.Assert.assertNull(vm.getCustomPaymentLimitDate(cardId, "Octubre 2026"))
+      org.junit.Assert.assertNull(vm.getCustomBillingCycleRange(cardId, "Octubre 2026"))
+
+      // e. UI state reiniciado
+      assertEquals(0, vm.uiState.value.cards.size)
+      org.junit.Assert.assertNull(vm.uiState.value.selectedCard)
+      org.junit.Assert.assertTrue(vm.uiState.value.customCutDates.isEmpty())
+      org.junit.Assert.assertTrue(vm.uiState.value.customPaymentLimits.isEmpty())
+      org.junit.Assert.assertTrue(vm.uiState.value.customCycleRanges.isEmpty())
+    } finally {
+      db.close()
+    }
+  }
 }
 

@@ -981,8 +981,7 @@ object GeminiService {
             }
 
             // 5. Guardar en directorio interno de logotipos en formato PNG
-            val logosDir = File(context.filesDir, "logos")
-            if (!logosDir.exists()) logosDir.mkdirs()
+            val logosDir = LogoStorageUtil.getLogosDir(context)
 
             val safeBaseName = establishmentName.lowercase(Locale.ROOT)
                 .replace(Regex("""[^a-z0-9]"""), "_")

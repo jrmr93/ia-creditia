@@ -22,6 +22,8 @@ class CreditiaRepository(
 
     suspend fun getAllCardsList(): List<CreditCardEntity> = cardDao.getAllCardsList()
 
+    suspend fun getAllExpensesList(): List<ExpenseEntity> = expenseDao.getAllExpensesList()
+
     suspend fun insertCard(card: CreditCardEntity): Long = cardDao.insertCard(card)
 
     suspend fun updateCard(card: CreditCardEntity) = cardDao.updateCard(card)

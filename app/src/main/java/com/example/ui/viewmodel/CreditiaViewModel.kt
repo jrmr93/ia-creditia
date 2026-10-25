@@ -19,6 +19,7 @@ import com.example.util.PaymentAlertSchedule
 import com.example.util.GeminiService
 import com.example.util.GeminiTestResult
 import com.example.util.ReceiptStorageUtil
+import com.example.util.LogoStorageUtil
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
@@ -109,11 +110,14 @@ data class CreditiaUiState(
     val customPaymentLimits: Map<String, String> = emptyMap()
 )
 
-class CreditiaViewModel(application: Application) : AndroidViewModel(application) {
+class CreditiaViewModel @JvmOverloads constructor(
+    application: Application,
+    repositoryOverride: CreditiaRepository? = null
+) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("creditia_secure_prefs", android.content.Context.MODE_PRIVATE)
     private val logoPrefs = application.getSharedPreferences("creditia_establishment_logos", android.content.Context.MODE_PRIVATE)
-    private val database = AppDatabase.getDatabase(application)
-    val repository = CreditiaRepository(database.creditCardDao(), database.expenseDao())
+    private val database = if (repositoryOverride == null) AppDatabase.getDatabase(application) else null
+    val repository: CreditiaRepository = repositoryOverride ?: CreditiaRepository(database!!.creditCardDao(), database.expenseDao())
 
     companion object {
         const val NOTIFICATION_CHANNEL_ID = "creditia_payment_reminders"
@@ -952,29 +956,52 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
 
 
 
-    fun confirmClearDb() {
+    suspend fun clearLocalDatabase() {
         val app = getApplication<Application>()
         cancelPaymentAlarm()
-        viewModelScope.launch {
-            ReceiptStorageUtil.deleteAllReceiptFiles(app)
-            repository.clearAllData()
-            _uiState.update {
-                it.copy(
-                    isClearDbOpen = false,
-                    selectedCard = null,
-                    cards = emptyList(),
-                    editingExpense = null,
-                    expenseToDelete = null,
-                    cardToDelete = null,
-                    searchQuery = "",
-                    isSearchActive = false,
-                    selectedExactDate = null,
-                    selectedPeriod = "",
-                    isSelectionMode = false,
-                    selectedExpenseIds = emptySet()
-                )
+        ReceiptStorageUtil.deleteAllReceiptFiles(app)
+        LogoStorageUtil.deleteAllLogoFiles(app)
+        repository.clearAllData()
+        logoPrefs.edit().clear().apply()
+
+        val editor = prefs.edit()
+        for ((k, _) in prefs.all) {
+            if (k.startsWith("custom_cut_date_") ||
+                k.startsWith("custom_payment_limit_") ||
+                k.startsWith("custom_cycle_range_")
+            ) {
+                editor.remove(k)
             }
-            showToast("✓ Base de datos purgada completamente (tarjetas, consumos, diferidos y fotos)")
+        }
+        editor.apply()
+
+        _uiState.update {
+            it.copy(
+                isClearDbOpen = false,
+                selectedCard = null,
+                cards = emptyList(),
+                editingExpense = null,
+                expenseToDelete = null,
+                cardToDelete = null,
+                searchQuery = "",
+                isSearchActive = false,
+                selectedExactDate = null,
+                selectedPeriod = "",
+                isSelectionMode = false,
+                selectedExpenseIds = emptySet(),
+                logoTargetExpense = null,
+                lastAppliedLogoPath = null,
+                customCycleRanges = emptyMap(),
+                customCutDates = emptyMap(),
+                customPaymentLimits = emptyMap()
+            )
+        }
+        showToast("✓ Base de datos local limpiada completamente (tarjetas, consumos, comprobantes, fotos de logos y fechas)")
+    }
+
+    fun confirmClearDb() {
+        viewModelScope.launch {
+            clearLocalDatabase()
         }
     }
 
@@ -1002,32 +1029,82 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * Exporta el respaldo completo (tarjetas, consumos con todos sus datos y fotos de comprobantes)
-     * en un archivo ZIP al OutputStream proporcionado.
+     * Exporta el respaldo completo (tarjetas, consumos con todos sus datos, fotos de comprobantes,
+     * fotos de logos, fechas y configuración) en un archivo ZIP al OutputStream proporcionado.
      */
-    fun exportFullBackup(outputStream: java.io.OutputStream) {
-        val cards = _uiState.value.cards
-        val expenses = allExpenses.value
+    suspend fun exportFullBackup(outputStream: java.io.OutputStream) {
         val app = getApplication<Application>()
+        val cards = repository.getAllCardsList()
+        val expenses = repository.getAllExpensesList()
         com.example.util.BackupUtil.exportFullBackup(app, cards, expenses, outputStream)
     }
 
     /**
-     * Restaura un respaldo completo desde el InputStream (acepta archivo ZIP con fotos o JSON legacy).
+     * Restaura un respaldo completo desde el InputStream (acepta archivo ZIP con fotos y logos o JSON legacy).
      */
     suspend fun restoreFullBackup(inputStream: java.io.InputStream): Triple<Int, Int, Int> {
         val app = getApplication<Application>()
 
         cancelPaymentAlarm()
         ReceiptStorageUtil.deleteAllReceiptFiles(app)
+        LogoStorageUtil.deleteAllLogoFiles(app)
         repository.clearAllData()
+        logoPrefs.edit().clear().apply()
+
+        // Limpiar fechas personalizadas previas para asegurar restauración limpia
+        val clearPrefsEditor = prefs.edit()
+        for ((k, _) in prefs.all) {
+            if (k.startsWith("custom_cut_date_") ||
+                k.startsWith("custom_payment_limit_") ||
+                k.startsWith("custom_cycle_range_")
+            ) {
+                clearPrefsEditor.remove(k)
+            }
+        }
+        clearPrefsEditor.apply()
 
         val parsed = com.example.util.BackupUtil.parseBackup(app, inputStream)
+
+        val idMapping = mutableMapOf<Long, Long>()
+        var restoredCards = 0
+        var restoredExpenses = 0
+
+        for (card in parsed.cards) {
+            val oldId = card.id
+            val newCard = if (oldId > 0) card else card.copy(id = 0L)
+            val newId = repository.insertCard(newCard)
+            val effectiveId = if (newId > 0) newId else oldId
+            idMapping[oldId] = effectiveId
+            restoredCards++
+        }
+
+        for (expense in parsed.expenses) {
+            val oldCardId = expense.cardId
+            val targetCardId = idMapping[oldCardId] ?: idMapping.values.firstOrNull() ?: 1L
+            val newExpense = expense.copy(
+                id = 0L,
+                cardId = targetCardId
+            )
+            repository.insertExpense(newExpense)
+            restoredExpenses++
+        }
 
         // Restaurar configuración y preferencias de la aplicación si están presentes
         if (parsed.preferences.isNotEmpty()) {
             val editor = prefs.edit()
-            for ((key, value) in parsed.preferences) {
+            for ((rawKey, value) in parsed.preferences) {
+                var key = rawKey
+                for ((oldCardId, newCardId) in idMapping) {
+                    if (oldCardId != newCardId) {
+                        if (rawKey.startsWith("custom_cycle_range_${oldCardId}_")) {
+                            key = rawKey.replaceFirst("custom_cycle_range_${oldCardId}_", "custom_cycle_range_${newCardId}_")
+                        } else if (rawKey.startsWith("custom_cut_date_${oldCardId}_")) {
+                            key = rawKey.replaceFirst("custom_cut_date_${oldCardId}_", "custom_cut_date_${newCardId}_")
+                        } else if (rawKey.startsWith("custom_payment_limit_${oldCardId}_")) {
+                            key = rawKey.replaceFirst("custom_payment_limit_${oldCardId}_", "custom_payment_limit_${newCardId}_")
+                        }
+                    }
+                }
                 when (value) {
                     is Boolean -> editor.putBoolean(key, value)
                     is Int -> editor.putInt(key, value)
@@ -1046,27 +1123,27 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             editor.apply()
         }
 
-        val idMapping = mutableMapOf<Long, Long>()
-        var restoredCards = 0
-        var restoredExpenses = 0
-
-        for (card in parsed.cards) {
-            val oldId = card.id
-            val newCard = card.copy(id = 0L)
-            val newId = repository.insertCard(newCard)
-            idMapping[oldId] = newId
-            restoredCards++
+        // Restaurar catálogo de logos recordados
+        if (parsed.rememberedLogos.isNotEmpty()) {
+            val lEditor = logoPrefs.edit()
+            for ((estKey, logoPath) in parsed.rememberedLogos) {
+                lEditor.putString(estKey, logoPath)
+            }
+            lEditor.apply()
         }
 
-        for (expense in parsed.expenses) {
-            val oldCardId = expense.cardId
-            val targetCardId = idMapping[oldCardId] ?: idMapping.values.firstOrNull() ?: 1L
-            val newExpense = expense.copy(
-                id = 0L,
-                cardId = targetCardId
-            )
-            repository.insertExpense(newExpense)
-            restoredExpenses++
+        // Recargar fechas de corte, rangos y fechas máximas de pago personalizadas
+        val reloadedRanges = mutableMapOf<String, String>()
+        val reloadedCutDates = mutableMapOf<String, String>()
+        val reloadedPaymentLimits = mutableMapOf<String, String>()
+        for ((k, v) in prefs.all) {
+            if (k.startsWith("custom_cycle_range_") && v is String) {
+                reloadedRanges[k.removePrefix("custom_cycle_range_")] = v
+            } else if (k.startsWith("custom_cut_date_") && v is String) {
+                reloadedCutDates[k.removePrefix("custom_cut_date_")] = v
+            } else if (k.startsWith("custom_payment_limit_") && v is String) {
+                reloadedPaymentLimits[k.removePrefix("custom_payment_limit_")] = v
+            }
         }
 
         val allCardsList = repository.getAllCardsList()
@@ -1107,13 +1184,17 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                 notificationLeadDays = leadDays,
                 isGeminiAiEnabled = aiEnabled,
                 geminiApiKey = savedGeminiKey,
-                geminiModel = savedGeminiModel
+                geminiModel = savedGeminiModel,
+                customCycleRanges = reloadedRanges,
+                customCutDates = reloadedCutDates,
+                customPaymentLimits = reloadedPaymentLimits
             )
         }
         val photoMsg = if (parsed.photosCount > 0) " y ${parsed.photosCount} fotos" else ""
-        val configMsg = if (parsed.preferences.isNotEmpty()) ", configuración" else ""
-        showToast("✓ Respaldo restaurado: $restoredCards tarjetas, $restoredExpenses consumos$configMsg$photoMsg")
-        return Triple(restoredCards, restoredExpenses, parsed.photosCount)
+        val logoMsg = if (parsed.logosCount > 0) ", ${parsed.logosCount} logos" else ""
+        val configMsg = if (parsed.preferences.isNotEmpty()) ", fechas y configuración" else ""
+        showToast("✓ Respaldo restaurado: $restoredCards tarjetas, $restoredExpenses consumos$configMsg$photoMsg$logoMsg")
+        return Triple(restoredCards, restoredExpenses, parsed.photosCount + parsed.logosCount)
     }
 
     fun exportDatabaseJson(): String {
@@ -1140,6 +1221,14 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             }
         }
         json.put("preferences", prefsObj)
+
+        val logoPrefsObj = JSONObject()
+        for ((key, value) in logoPrefs.all) {
+            if (value is String && value.isNotBlank()) {
+                logoPrefsObj.put(key, value)
+            }
+        }
+        json.put("remembered_logos", logoPrefsObj)
 
         val cardsArray = JSONArray()
         for (c in cards) {

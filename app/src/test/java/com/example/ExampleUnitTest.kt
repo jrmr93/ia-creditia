@@ -1288,6 +1288,8 @@ class FakeExpenseDao : com.example.data.local.ExpenseDao {
   override fun getAllExpenses(): kotlinx.coroutines.flow.Flow<List<com.example.data.model.ExpenseEntity>> =
     kotlinx.coroutines.flow.flowOf(expenses)
 
+  override suspend fun getAllExpensesList(): List<com.example.data.model.ExpenseEntity> = expenses
+
   override fun getExpensesByCard(cardId: Long): kotlinx.coroutines.flow.Flow<List<com.example.data.model.ExpenseEntity>> =
     kotlinx.coroutines.flow.flowOf(expenses.filter { it.cardId == cardId })
 

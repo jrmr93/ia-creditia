@@ -14,6 +14,9 @@ interface ExpenseDao {
     @Query("SELECT * FROM expenses ORDER BY sequenceNumber ASC")
     fun getAllExpenses(): Flow<List<ExpenseEntity>>
 
+    @Query("SELECT * FROM expenses ORDER BY sequenceNumber ASC")
+    suspend fun getAllExpensesList(): List<ExpenseEntity>
+
     @Query("SELECT * FROM expenses WHERE cardId = :cardId ORDER BY sequenceNumber ASC")
     fun getExpensesByCard(cardId: Long): Flow<List<ExpenseEntity>>
 
