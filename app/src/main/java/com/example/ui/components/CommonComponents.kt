@@ -1692,8 +1692,12 @@ fun EditBillingCycleRangeDialog(
     currentRange: String,
     calculatedRange: String,
     isOverridden: Boolean,
+    currentCutDate: String = "",
+    currentPaymentDate: String = "",
+    isCutOverridden: Boolean = false,
+    isPaymentOverridden: Boolean = false,
     onDismiss: () -> Unit,
-    onSaveRange: (String) -> Unit,
+    onSaveAll: (range: String, cutDate: String?, paymentDate: String?) -> Unit,
     onResetToCalculated: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1706,16 +1710,35 @@ fun EditBillingCycleRangeDialog(
 
     var startDateStr by remember(parts) { mutableStateOf(parts.first) }
     var endDateStr by remember(parts) { mutableStateOf(parts.second) }
+    var cutDateStr by remember(currentCutDate) { mutableStateOf(currentCutDate) }
+    var paymentDateStr by remember(currentPaymentDate) { mutableStateOf(currentPaymentDate) }
 
     fun parseCalendar(dateStr: String): Calendar {
         val cal = Calendar.getInstance()
         try {
-            val p = dateStr.split("/")
-            if (p.size == 3) {
-                cal.set(p[0].toInt(), p[1].toInt() - 1, p[2].toInt())
+            // Support "Sáb 24/10/2026" or "2026/10/24" or "24/10/2026"
+            val clean = dateStr.replace(Regex("""^[A-Za-zÁÉÍÓÚáéíóúñÑ.,\s]+"""), "").trim()
+            val slashParts = clean.split("/")
+            if (slashParts.size == 3) {
+                if (slashParts[0].length == 4) {
+                    // YYYY/MM/DD
+                    cal.set(slashParts[0].toInt(), slashParts[1].toInt() - 1, slashParts[2].toInt())
+                } else {
+                    // DD/MM/YYYY
+                    cal.set(slashParts[2].toInt(), slashParts[1].toInt() - 1, slashParts[0].toInt())
+                }
             }
         } catch (_: Exception) {}
         return cal
+    }
+
+    fun formatFormattedDayOfWeek(cal: Calendar): String {
+        val dayNames = listOf("", "Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb")
+        val dow = dayNames.getOrElse(cal.get(Calendar.DAY_OF_WEEK)) { "" }
+        val d = String.format(Locale.US, "%02d", cal.get(Calendar.DAY_OF_MONTH))
+        val m = String.format(Locale.US, "%02d", cal.get(Calendar.MONTH) + 1)
+        val y = cal.get(Calendar.YEAR)
+        return "$dow $d/$m/$y"
     }
 
     AlertDialog(
@@ -1731,7 +1754,7 @@ fun EditBillingCycleRangeDialog(
         title = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "Editar Rango de Facturación",
+                    text = "Editar Periodo y Fechas",
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
                     textAlign = TextAlign.Center
@@ -1747,9 +1770,9 @@ fun EditBillingCycleRangeDialog(
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (isOverridden) {
+                if (isOverridden || isCutOverridden || isPaymentOverridden) {
                     Surface(
                         shape = RoundedCornerShape(8.dp),
                         color = Color(0xFFF59E0B).copy(alpha = 0.12f),
@@ -1768,8 +1791,8 @@ fun EditBillingCycleRangeDialog(
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "Este periodo tiene un rango personalizado manual sobrescrito.",
-                                fontSize = 11.5.sp,
+                                text = "Este periodo tiene valores personalizados manuales sobrescritos.",
+                                fontSize = 11.sp,
                                 color = Color(0xFFD97706),
                                 fontWeight = FontWeight.Medium
                             )
@@ -1777,7 +1800,7 @@ fun EditBillingCycleRangeDialog(
                     }
                 }
 
-                // Fecha de Inicio
+                // 1. Fecha de Inicio del ciclo
                 OutlinedTextField(
                     value = startDateStr,
                     onValueChange = { startDateStr = it },
@@ -1810,11 +1833,13 @@ fun EditBillingCycleRangeDialog(
                     shape = RoundedCornerShape(10.dp)
                 )
 
-                // Fecha de Fin (Corte)
+                // 2. Fecha de Fin del ciclo
                 OutlinedTextField(
                     value = endDateStr,
-                    onValueChange = { endDateStr = it },
-                    label = { Text("Fecha de Fin / Corte (Hasta)") },
+                    onValueChange = {
+                        endDateStr = it
+                    },
+                    label = { Text("Fecha de Fin del ciclo (Hasta)") },
                     placeholder = { Text("YYYY/MM/DD") },
                     singleLine = true,
                     modifier = Modifier
@@ -1826,7 +1851,11 @@ fun EditBillingCycleRangeDialog(
                             DatePickerDialog(
                                 context,
                                 { _, y, m, d ->
-                                    endDateStr = String.format(Locale.US, "%04d/%02d/%02d", y, m + 1, d)
+                                    val formatted = String.format(Locale.US, "%04d/%02d/%02d", y, m + 1, d)
+                                    endDateStr = formatted
+                                    // Sugerir actualización armónica del corte si aún coincide
+                                    val selCal = Calendar.getInstance().apply { set(y, m, d) }
+                                    cutDateStr = formatFormattedDayOfWeek(selCal)
                                 },
                                 c.get(Calendar.YEAR),
                                 c.get(Calendar.MONTH),
@@ -1843,7 +1872,75 @@ fun EditBillingCycleRangeDialog(
                     shape = RoundedCornerShape(10.dp)
                 )
 
-                // Resumen previo
+                // 3. Fecha de Corte de la Tarjeta (Visible en el gráfico)
+                OutlinedTextField(
+                    value = cutDateStr,
+                    onValueChange = { cutDateStr = it },
+                    label = { Text("Fecha de Corte (Gráfico Tarjeta)") },
+                    placeholder = { Text("Ej: Sáb 24/10/2026") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("input_cut_date"),
+                    trailingIcon = {
+                        IconButton(onClick = {
+                            val c = parseCalendar(cutDateStr)
+                            DatePickerDialog(
+                                context,
+                                { _, y, m, d ->
+                                    val selCal = Calendar.getInstance().apply { set(y, m, d) }
+                                    cutDateStr = formatFormattedDayOfWeek(selCal)
+                                },
+                                c.get(Calendar.YEAR),
+                                c.get(Calendar.MONTH),
+                                c.get(Calendar.DAY_OF_MONTH)
+                            ).show()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.EventRepeat,
+                                contentDescription = "Elegir fecha de corte",
+                                tint = CreditiaPrimary
+                            )
+                        }
+                    },
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                // 4. Fecha Máxima de Pago de la Tarjeta (Visible en el gráfico)
+                OutlinedTextField(
+                    value = paymentDateStr,
+                    onValueChange = { paymentDateStr = it },
+                    label = { Text("Fecha Máxima de Pago (Gráfico)") },
+                    placeholder = { Text("Ej: Mar 10/11/2026") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("input_payment_limit_date"),
+                    trailingIcon = {
+                        IconButton(onClick = {
+                            val c = parseCalendar(paymentDateStr)
+                            DatePickerDialog(
+                                context,
+                                { _, y, m, d ->
+                                    val selCal = Calendar.getInstance().apply { set(y, m, d) }
+                                    paymentDateStr = formatFormattedDayOfWeek(selCal)
+                                },
+                                c.get(Calendar.YEAR),
+                                c.get(Calendar.MONTH),
+                                c.get(Calendar.DAY_OF_MONTH)
+                            ).show()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = "Elegir fecha máxima de pago",
+                                tint = Color(0xFF10B981)
+                            )
+                        }
+                    },
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                // Resumen previo visual
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = CreditiaSurfaceContainerLow,
@@ -1851,26 +1948,30 @@ fun EditBillingCycleRangeDialog(
                 ) {
                     Column(
                         modifier = Modifier.padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
                         Text(
-                            text = "Rango resultante a aplicar:",
+                            text = "Valores a aplicar en la tarjeta:",
                             fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Text(
-                            text = "${startDateStr.trim()} - ${endDateStr.trim()}",
-                            fontSize = 13.5.sp,
-                            fontWeight = FontWeight.Bold,
+                            text = "• Ciclo: ${startDateStr.trim()} - ${endDateStr.trim()}",
+                            fontSize = 12.sp,
                             color = CreditiaPrimary
                         )
-                        if (calculatedRange.isNotBlank()) {
-                            Text(
-                                text = "Fórmula automática original: $calculatedRange",
-                                fontSize = 10.5.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
-                            )
-                        }
+                        Text(
+                            text = "• Corte: ${cutDateStr.trim()}",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "• Pago: ${paymentDateStr.trim()}",
+                            fontSize = 12.sp,
+                            color = Color(0xFF10B981),
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
@@ -1879,19 +1980,23 @@ fun EditBillingCycleRangeDialog(
             Button(
                 onClick = {
                     val finalRange = "${startDateStr.trim()} - ${endDateStr.trim()}"
-                    onSaveRange(finalRange)
+                    onSaveAll(
+                        finalRange,
+                        cutDateStr.trim().takeIf { it.isNotBlank() },
+                        paymentDateStr.trim().takeIf { it.isNotBlank() }
+                    )
                 },
                 enabled = startDateStr.isNotBlank() && endDateStr.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary),
                 shape = RoundedCornerShape(8.dp),
                 modifier = Modifier.testTag("btn_save_cycle_range")
             ) {
-                Text("Sobrescribir Rango", fontWeight = FontWeight.Bold)
+                Text("Guardar Cambios", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (isOverridden) {
+                if (isOverridden || isCutOverridden || isPaymentOverridden) {
                     TextButton(
                         onClick = onResetToCalculated,
                         modifier = Modifier.testTag("btn_reset_cycle_range")

@@ -104,7 +104,9 @@ data class CreditiaUiState(
     val logoSearchError: String? = null,
     val isApplyingLogo: Boolean = false,
     val lastAppliedLogoPath: String? = null,
-    val customCycleRanges: Map<String, String> = emptyMap()
+    val customCycleRanges: Map<String, String> = emptyMap(),
+    val customCutDates: Map<String, String> = emptyMap(),
+    val customPaymentLimits: Map<String, String> = emptyMap()
 )
 
 class CreditiaViewModel(application: Application) : AndroidViewModel(application) {
@@ -158,9 +160,15 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                 rawSavedModel
             }
             val initialCustomRanges = mutableMapOf<String, String>()
+            val initialCustomCutDates = mutableMapOf<String, String>()
+            val initialCustomPaymentLimits = mutableMapOf<String, String>()
             for ((k, v) in prefs.all) {
                 if (k.startsWith("custom_cycle_range_") && v is String) {
                     initialCustomRanges[k.removePrefix("custom_cycle_range_")] = v
+                } else if (k.startsWith("custom_cut_date_") && v is String) {
+                    initialCustomCutDates[k.removePrefix("custom_cut_date_")] = v
+                } else if (k.startsWith("custom_payment_limit_") && v is String) {
+                    initialCustomPaymentLimits[k.removePrefix("custom_payment_limit_")] = v
                 }
             }
             CreditiaUiState(
@@ -173,7 +181,9 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                 isGeminiAiEnabled = aiEnabled,
                 geminiApiKey = savedGeminiKey,
                 geminiModel = savedGeminiModel,
-                customCycleRanges = initialCustomRanges
+                customCycleRanges = initialCustomRanges,
+                customCutDates = initialCustomCutDates,
+                customPaymentLimits = initialCustomPaymentLimits
             )
         }
     )
@@ -875,6 +885,52 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun getCustomCutDate(cardId: Long?, periodName: String): String? {
+        if (cardId == null || periodName.isBlank() || periodName == "Todos los históricos") return null
+        return _uiState.value.customCutDates["${cardId}_${periodName}"]
+    }
+
+    fun setCustomCutDate(cardId: Long, periodName: String, customCutDate: String?) {
+        val key = "${cardId}_${periodName}"
+        val prefKey = "custom_cut_date_$key"
+        if (customCutDate.isNullOrBlank()) {
+            prefs.edit().remove(prefKey).apply()
+            _uiState.update { current ->
+                current.copy(customCutDates = current.customCutDates - key)
+            }
+            showToast("Fecha de corte restablecida a cálculo automático")
+        } else {
+            prefs.edit().putString(prefKey, customCutDate.trim()).apply()
+            _uiState.update { current ->
+                current.copy(customCutDates = current.customCutDates + (key to customCutDate.trim()))
+            }
+            showToast("✓ Fecha de corte sobrescrita para $periodName")
+        }
+    }
+
+    fun getCustomPaymentLimitDate(cardId: Long?, periodName: String): String? {
+        if (cardId == null || periodName.isBlank() || periodName == "Todos los históricos") return null
+        return _uiState.value.customPaymentLimits["${cardId}_${periodName}"]
+    }
+
+    fun setCustomPaymentLimitDate(cardId: Long, periodName: String, customPaymentDate: String?) {
+        val key = "${cardId}_${periodName}"
+        val prefKey = "custom_payment_limit_$key"
+        if (customPaymentDate.isNullOrBlank()) {
+            prefs.edit().remove(prefKey).apply()
+            _uiState.update { current ->
+                current.copy(customPaymentLimits = current.customPaymentLimits - key)
+            }
+            showToast("Fecha máxima de pago restablecida a cálculo automático")
+        } else {
+            prefs.edit().putString(prefKey, customPaymentDate.trim()).apply()
+            _uiState.update { current ->
+                current.copy(customPaymentLimits = current.customPaymentLimits + (key to customPaymentDate.trim()))
+            }
+            showToast("✓ Fecha máxima de pago sobrescrita para $periodName")
+        }
+    }
+
     fun searchAndApplyEstablishmentLogo(expense: ExpenseEntity) {
         openLogoSearchModal(expense)
     }
@@ -1538,8 +1594,16 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         return "$dow $day/$month/$year"
     }
 
-    fun getEffectiveCutDateForPeriod(card: CreditCardEntity?, periodName: String): String =
-        getCutDateForPeriod(card, periodName)
+    fun getEffectiveCutDateForPeriod(card: CreditCardEntity?, periodName: String): String {
+        if (card != null && periodName.isNotBlank() && periodName != "Todos los históricos") {
+            val key = "${card.id}_${periodName}"
+            val custom = _uiState.value.customCutDates[key]
+            if (!custom.isNullOrBlank()) {
+                return custom
+            }
+        }
+        return getCutDateForPeriod(card, periodName)
+    }
 
     fun getCutDateDescription(card: CreditCardEntity?, periodName: String): String {
         val cutCal = getCutCalendarForPeriod(card, periodName)
@@ -1580,6 +1644,17 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         return "$dow $day/$month/$year"
     }
 
+    fun getEffectivePaymentLimitDateForPeriod(card: CreditCardEntity?, periodName: String): String {
+        if (card != null && periodName.isNotBlank() && periodName != "Todos los históricos") {
+            val key = "${card.id}_${periodName}"
+            val custom = _uiState.value.customPaymentLimits[key]
+            if (!custom.isNullOrBlank()) {
+                return custom
+            }
+        }
+        return getPaymentLimitDateForPeriod(card, periodName)
+    }
+
     fun getPaymentLimitDateDescription(card: CreditCardEntity?, periodName: String): String {
         if (card == null) return "Martes, 10 de noviembre de 2026"
         val cutCal = getCutCalendarForPeriod(card, periodName)
@@ -1598,7 +1673,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         val targetCard = _uiState.value.selectedCard ?: _uiState.value.cards.firstOrNull()
         return if (targetCard != null) {
             val currentPeriod = getCurrentActivePeriod(targetCard)
-            getPaymentLimitDateForPeriod(targetCard, currentPeriod)
+            getEffectivePaymentLimitDateForPeriod(targetCard, currentPeriod)
         } else {
             "Mar 10/11/2026"
         }

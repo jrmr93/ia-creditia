@@ -848,4 +848,12 @@ class CreditiaRepository(
     suspend fun updateLogoForEstablishment(establishment: String, logoUrl: String?): Int {
         return expenseDao.updateLogoByEstablishment(establishment, logoUrl)
     }
+
+    suspend fun updateTransactionGroup(expenseIds: List<Long>, groupId: String?, groupName: String?) {
+        expenseDao.updateTransactionGroup(expenseIds, groupId, groupName)
+    }
+
+    suspend fun clearTransactionGroup(groupId: String) {
+        expenseDao.clearTransactionGroup(groupId)
+    }
 }

@@ -629,29 +629,34 @@ object GeminiService {
             httpClient.newCall(req).execute().use { resp ->
                 if (resp.isSuccessful) {
                     val body = resp.body?.string() ?: ""
-                    val regexThumb = Regex(""""source":"([^"]+)"""")
-                    val regexTitle = Regex(""""title":"([^"]+)"""")
-                    val thumbs = regexThumb.findAll(body).map { it.groupValues[1] }.toList()
-                    val titles = regexTitle.findAll(body).map { it.groupValues[1] }.toList()
-                    for (i in thumbs.indices) {
-                        val thumbUrl = thumbs[i]
-                        val title = titles.getOrNull(i) ?: searchTerm
-                        if (!thumbUrl.endsWith(".pdf", ignoreCase = true) && !thumbUrl.endsWith(".pdf.jpg", ignoreCase = true)) {
-                            list.add(
-                                LogoCandidate(
-                                    url = thumbUrl,
-                                    title = title,
-                                    domain = "es.wikipedia.org",
-                                    source = "Wikipedia",
-                                    thumbnailUrl = thumbUrl
+                    val root = JSONObject(body)
+                    val queryObj = root.optJSONObject("query")
+                    val pagesObj = queryObj?.optJSONObject("pages")
+                    if (pagesObj != null) {
+                        val keys = pagesObj.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            val page = pagesObj.optJSONObject(key) ?: continue
+                            val thumbObj = page.optJSONObject("thumbnail")
+                            val thumbUrl = thumbObj?.optString("source", "")?.trim() ?: ""
+                            val title = page.optString("title", searchTerm).trim()
+                            if (thumbUrl.isNotBlank() && !thumbUrl.endsWith(".pdf", ignoreCase = true) && !thumbUrl.endsWith(".pdf.jpg", ignoreCase = true)) {
+                                list.add(
+                                    LogoCandidate(
+                                        url = thumbUrl,
+                                        title = if (title.isNotBlank()) title else searchTerm,
+                                        domain = "es.wikipedia.org",
+                                        source = "Wikipedia",
+                                        thumbnailUrl = thumbUrl
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.w("GeminiService", "Aviso en Wikipedia: ${e.message}")
+            try { Log.w("GeminiService", "Aviso en Wikipedia: ${e.message}") } catch (_: Throwable) {}
         }
         return list
     }
@@ -660,7 +665,7 @@ object GeminiService {
         val list = mutableListOf<LogoCandidate>()
         try {
             val enc = URLEncoder.encode("$searchTerm logo", "UTF-8")
-            val url = "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrsearch=$enc&gsrlimit=8&prop=imageinfo&iiprop=url&iiurlwidth=500&format=json"
+            val url = "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrnamespace=6&gsrsearch=$enc&gsrlimit=10&prop=imageinfo&iiprop=url|thumburl|dimensions&iiurlwidth=500&format=json"
             val req = Request.Builder()
                 .url(url)
                 .header("User-Agent", "CreditiaApp/1.0 (info@creditia.app)")
@@ -669,31 +674,46 @@ object GeminiService {
             httpClient.newCall(req).execute().use { resp ->
                 if (resp.isSuccessful) {
                     val body = resp.body?.string() ?: ""
-                    val regexThumb = Regex(""""thumburl":"([^"]+)"""")
-                    val regexFull = Regex(""""url":"([^"]+)"""")
-                    val thumbs = regexThumb.findAll(body).map { it.groupValues[1] }.toList()
-                    val fulls = regexFull.findAll(body).map { it.groupValues[1] }.toList()
-                    for (i in thumbs.indices) {
-                        val thumb = thumbs[i]
-                        val full = fulls.getOrNull(i) ?: thumb
-                        if (!thumb.endsWith(".pdf.jpg", ignoreCase = true) && !thumb.endsWith(".pdf", ignoreCase = true)) {
-                            // Si el archivo original es .svg y thumburl es un PNG pre-renderizado a 500px, usamos thumburl para compatibilidad con BitmapFactory
-                            val usableUrl = if (full.endsWith(".svg", ignoreCase = true) && thumb.endsWith(".png", ignoreCase = true)) thumb else full
-                            list.add(
-                                LogoCandidate(
-                                    url = usableUrl,
-                                    title = "$searchTerm (Wikimedia)",
-                                    domain = "commons.wikimedia.org",
-                                    source = "Wikimedia",
-                                    thumbnailUrl = thumb
+                    val root = JSONObject(body)
+                    val queryObj = root.optJSONObject("query")
+                    val pagesObj = queryObj?.optJSONObject("pages")
+                    if (pagesObj != null) {
+                        val keys = pagesObj.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            val page = pagesObj.optJSONObject(key) ?: continue
+                            val imageInfoArray = page.optJSONArray("imageinfo") ?: continue
+                            val info = imageInfoArray.optJSONObject(0) ?: continue
+                            val fullUrl = info.optString("url", "").trim()
+                            val thumbUrl = info.optString("thumburl", "").trim()
+                            val pageTitle = page.optString("title", searchTerm).removePrefix("File:").removeSuffix(".svg").removeSuffix(".png").removeSuffix(".jpg").trim()
+
+                            val usableThumb = if (thumbUrl.isNotBlank()) thumbUrl else fullUrl
+                            val usableFull = if (fullUrl.endsWith(".svg", ignoreCase = true) && thumbUrl.isNotBlank()) {
+                                thumbUrl
+                            } else if (fullUrl.isNotBlank()) {
+                                fullUrl
+                            } else {
+                                thumbUrl
+                            }
+
+                            if (usableFull.isNotBlank() && !usableFull.endsWith(".pdf", ignoreCase = true) && !usableFull.endsWith(".pdf.jpg", ignoreCase = true)) {
+                                list.add(
+                                    LogoCandidate(
+                                        url = usableFull,
+                                        title = if (pageTitle.isNotBlank()) pageTitle else "$searchTerm (Wikimedia)",
+                                        domain = "commons.wikimedia.org",
+                                        source = "Wikimedia",
+                                        thumbnailUrl = usableThumb
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.w("GeminiService", "Aviso en Wikimedia: ${e.message}")
+            try { Log.w("GeminiService", "Aviso en Wikimedia: ${e.message}") } catch (_: Throwable) {}
         }
         return list
     }
@@ -747,7 +767,7 @@ object GeminiService {
                 }
             }
         } catch (e: Exception) {
-            Log.w("GeminiService", "Aviso en Bing ($query): ${e.message}")
+            try { Log.w("GeminiService", "Aviso en Bing ($query): ${e.message}") } catch (_: Throwable) {}
         }
         return list
     }
@@ -758,17 +778,24 @@ object GeminiService {
 
         return listOf(
             LogoCandidate(
-                url = "https://logo.clearbit.com/$cleanDomain",
-                title = "$brandName (Logo HD)",
-                domain = cleanDomain,
-                source = "Logo HD",
-                thumbnailUrl = "https://logo.clearbit.com/$cleanDomain"
-            ),
-            LogoCandidate(
-                url = "https://www.google.com/s2/favicons?domain=$cleanDomain&sz=512",
+                url = "https://t3.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=http://$cleanDomain&size=256",
                 title = "$brandName (Icono HD)",
                 domain = cleanDomain,
                 source = "Icono HD",
+                thumbnailUrl = "https://t3.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=http://$cleanDomain&size=256"
+            ),
+            LogoCandidate(
+                url = "https://icon.horse/icon/$cleanDomain",
+                title = "$brandName (Marca Web)",
+                domain = cleanDomain,
+                source = "Marca Web",
+                thumbnailUrl = "https://icon.horse/icon/$cleanDomain"
+            ),
+            LogoCandidate(
+                url = "https://www.google.com/s2/favicons?domain=$cleanDomain&sz=512",
+                title = "$brandName (Favicon 512)",
+                domain = cleanDomain,
+                source = "Icono 512",
                 thumbnailUrl = "https://www.google.com/s2/favicons?domain=$cleanDomain&sz=256"
             )
         )

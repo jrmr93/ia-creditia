@@ -374,13 +374,38 @@ fun LogoSearchDialog(
                                                     modifier = Modifier.fillMaxSize(),
                                                     contentAlignment = Alignment.Center
                                                 ) {
-                                                    AsyncImage(
+                                                    coil.compose.SubcomposeAsyncImage(
                                                         model = candidate.thumbnailUrl ?: candidate.url,
                                                         contentDescription = candidate.title,
                                                         contentScale = ContentScale.Fit,
                                                         modifier = Modifier
                                                             .size(62.dp)
-                                                            .padding(4.dp)
+                                                            .padding(4.dp),
+                                                        loading = {
+                                                            Box(
+                                                                modifier = Modifier.fillMaxSize(),
+                                                                contentAlignment = Alignment.Center
+                                                            ) {
+                                                                CircularProgressIndicator(
+                                                                    modifier = Modifier.size(20.dp),
+                                                                    strokeWidth = 2.dp,
+                                                                    color = CreditiaPrimary
+                                                                )
+                                                            }
+                                                        },
+                                                        error = {
+                                                            Box(
+                                                                modifier = Modifier.fillMaxSize(),
+                                                                contentAlignment = Alignment.Center
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Storefront,
+                                                                    contentDescription = null,
+                                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                                                    modifier = Modifier.size(28.dp)
+                                                                )
+                                                            }
+                                                        }
                                                     )
                                                 }
                                             }

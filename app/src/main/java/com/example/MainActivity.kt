@@ -57,6 +57,25 @@ class MainActivity : ComponentActivity() {
         windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
         windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
         windowInsetsController.isAppearanceLightStatusBars = true
+        val imageLoader = coil.ImageLoader.Builder(this)
+            .components {
+                add(coil.decode.SvgDecoder.Factory())
+            }
+            .okHttpClient {
+                okhttp3.OkHttpClient.Builder()
+                    .addInterceptor { chain ->
+                        val original = chain.request()
+                        val request = original.newBuilder()
+                            .header("User-Agent", "CreditiaApp/1.0 (Android; Linux) AppleWebKit/537.36")
+                            .build()
+                        chain.proceed(request)
+                    }
+                    .build()
+            }
+            .crossfade(true)
+            .build()
+        coil.Coil.setImageLoader(imageLoader)
+
         setContent {
             CreditiaTheme {
                 CreditiaApp()

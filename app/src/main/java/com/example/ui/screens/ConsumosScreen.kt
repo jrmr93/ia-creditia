@@ -9,6 +9,10 @@ import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Layers
+import androidx.compose.material.icons.filled.LinkOff
+import androidx.compose.material.icons.filled.Payment
 import androidx.compose.material.icons.filled.Info
 import java.util.Calendar
 import androidx.compose.animation.AnimatedVisibility
@@ -38,6 +42,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -132,6 +137,17 @@ import com.example.ui.viewmodel.CreditiaViewModel
 import com.example.ui.viewmodel.SortOrder
 import java.util.Locale
 
+sealed class ExpenseListItem {
+    data class Single(val expense: ExpenseEntity) : ExpenseListItem()
+    data class Group(
+        val groupId: String,
+        val groupName: String,
+        val expenses: List<ExpenseEntity>,
+        val totalAmount: Double,
+        val dateString: String
+    ) : ExpenseListItem()
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConsumosScreen(
@@ -184,10 +200,10 @@ fun ConsumosScreen(
 
     val daysUntilCut = selectedCard?.let { viewModel.getDaysUntilCut(it.cutDay) } ?: 4
     val periodCutDate = selectedCard?.let {
-        viewModel.getCutDateForPeriod(it, selectedPeriod)
+        viewModel.getEffectiveCutDateForPeriod(it, selectedPeriod)
     } ?: "Sáb 24/10/2026"
     val paymentLimitDate = selectedCard?.let {
-        viewModel.getPaymentLimitDateForPeriod(it, selectedPeriod)
+        viewModel.getEffectivePaymentLimitDateForPeriod(it, selectedPeriod)
     } ?: "Mar 10/11/2026"
     val cycleRange = if (!uiState.selectedExactDate.isNullOrBlank()) {
         "Transacciones del ${uiState.selectedExactDate}"
@@ -209,8 +225,40 @@ fun ConsumosScreen(
     val selectedExpenseIds = uiState.selectedExpenseIds
     val isSelectionMode = uiState.isSelectionMode
     var showMultiDeferDialog by remember { mutableStateOf(false) }
+    var showGroupDialog by remember { mutableStateOf(false) }
+    var groupNameInput by remember { mutableStateOf("") }
     var showEditCycleRangeDialog by remember { mutableStateOf(false) }
     var targetPeriodToEdit by remember { mutableStateOf<String?>(null) }
+
+    val expenseListItems = remember(filteredExpenses) {
+        val result = mutableListOf<ExpenseListItem>()
+        val seenGroupIds = mutableSetOf<String>()
+
+        for (expense in filteredExpenses) {
+            val gId = expense.transactionGroupId
+            if (gId.isNullOrBlank()) {
+                result.add(ExpenseListItem.Single(expense))
+            } else {
+                if (gId !in seenGroupIds) {
+                    seenGroupIds.add(gId)
+                    val groupExpenses = filteredExpenses.filter { it.transactionGroupId == gId }
+                    val totalGroup = groupExpenses.filter { it.isExpense() }.sumOf { it.amount } -
+                            groupExpenses.filter { it.isCreditNote() }.sumOf { it.amount } -
+                            groupExpenses.filter { it.isPayment() }.sumOf { it.amount }
+                    result.add(
+                        ExpenseListItem.Group(
+                            groupId = gId,
+                            groupName = expense.transactionGroupName ?: "Transacción Agrupada",
+                            expenses = groupExpenses,
+                            totalAmount = if (totalGroup != 0.0) totalGroup else groupExpenses.sumOf { it.amount },
+                            dateString = groupExpenses.firstOrNull()?.dateString ?: expense.dateString
+                        )
+                    )
+                }
+            }
+        }
+        result
+    }
 
     Box(
         modifier = modifier
@@ -508,7 +556,13 @@ fun ConsumosScreen(
                                 }
 
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable(enabled = selectedPeriod != "Todos los históricos") {
+                                            targetPeriodToEdit = selectedPeriod
+                                            showEditCycleRangeDialog = true
+                                        },
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -530,12 +584,23 @@ fun ConsumosScreen(
                                         )
                                     }
 
-                                    Text(
-                                        text = "Pago: $paymentLimitDate",
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Payment,
+                                            contentDescription = null,
+                                            tint = Color.White.copy(alpha = 0.9f),
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Text(
+                                            text = "Pago: $paymentLimitDate",
+                                            fontSize = 11.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White
+                                        )
+                                    }
                                 }
 
                                 if (selectedPeriod != "Todos los históricos") {
@@ -1311,31 +1376,71 @@ fun ConsumosScreen(
                         }
                     }
                 } else {
-                    items(filteredExpenses, key = { it.id }) { expense ->
-                        val isSelected = expense.id in selectedExpenseIds
-                        ExpenseCardItem(
-                            expense = expense,
-                            isSelected = isSelected,
-                            isSelectionMode = isSelectionMode,
-                            onToggleSelect = {
-                                viewModel.toggleExpenseSelection(expense.id)
-                            },
-                            onLongPress = {
-                                viewModel.toggleExpenseSelection(expense.id)
-                            },
-                            onEdit = {
-                                viewModel.startEditExpense(expense)
-                                onNavigateToNewExpense()
-                            },
-                            onDelete = {
-                                viewModel.promptDeleteExpense(expense)
-                            },
-                            onReceiptClick = { uri, title, subtitle ->
-                                viewingReceiptUri = uri
-                                viewingReceiptTitle = title
-                                viewingReceiptSubtitle = subtitle
+                    items(expenseListItems, key = { item ->
+                        when (item) {
+                            is ExpenseListItem.Single -> "single_${item.expense.id}"
+                            is ExpenseListItem.Group -> "group_${item.groupId}"
+                        }
+                    }) { item ->
+                        when (item) {
+                            is ExpenseListItem.Single -> {
+                                val expense = item.expense
+                                val isSelected = expense.id in selectedExpenseIds
+                                ExpenseCardItem(
+                                    expense = expense,
+                                    isSelected = isSelected,
+                                    isSelectionMode = isSelectionMode,
+                                    onToggleSelect = {
+                                        viewModel.toggleExpenseSelection(expense.id)
+                                    },
+                                    onLongPress = {
+                                        viewModel.toggleExpenseSelection(expense.id)
+                                    },
+                                    onEdit = {
+                                        viewModel.startEditExpense(expense)
+                                        onNavigateToNewExpense()
+                                    },
+                                    onDelete = {
+                                        viewModel.promptDeleteExpense(expense)
+                                    },
+                                    onReceiptClick = { uri, title, subtitle ->
+                                        viewingReceiptUri = uri
+                                        viewingReceiptTitle = title
+                                        viewingReceiptSubtitle = subtitle
+                                    }
+                                )
                             }
-                        )
+                            is ExpenseListItem.Group -> {
+                                GroupedTransactionCardItem(
+                                    groupId = item.groupId,
+                                    groupName = item.groupName,
+                                    expenses = item.expenses,
+                                    totalAmount = item.totalAmount,
+                                    dateString = item.dateString,
+                                    selectedExpenseIds = selectedExpenseIds,
+                                    isSelectionMode = isSelectionMode,
+                                    allExpenses = allExpenses,
+                                    onToggleSelect = { expenseId ->
+                                        viewModel.toggleExpenseSelection(expenseId)
+                                    },
+                                    onEdit = { expense ->
+                                        viewModel.startEditExpense(expense)
+                                        onNavigateToNewExpense()
+                                    },
+                                    onDelete = { expense ->
+                                        viewModel.promptDeleteExpense(expense)
+                                    },
+                                    onReceiptClick = { uri, title, subtitle ->
+                                        viewingReceiptUri = uri
+                                        viewingReceiptTitle = title
+                                        viewingReceiptSubtitle = subtitle
+                                    },
+                                    onUngroup = {
+                                        viewModel.ungroupTransaction(item.groupId)
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -1422,33 +1527,68 @@ fun ConsumosScreen(
                     }
                 }
 
-                Button(
-                    onClick = { showMultiDeferDialog = true },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = CreditiaTertiary),
-                    shape = RoundedCornerShape(10.dp),
-                    enabled = selectedExpenseIds.isNotEmpty()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CalendarMonth,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = if (selectedExpenseIds.size > 1) {
-                                "Diferir ${selectedExpenseIds.size} Consumos Juntos (S/ ${String.format(Locale.US, "%.2f", totalSelectedAmount)})"
-                            } else {
-                                "Diferir Consumo Seleccionado (S/ ${String.format(Locale.US, "%.2f", totalSelectedAmount)})"
+                    if (selectedExpenseIds.size >= 2) {
+                        Button(
+                            onClick = {
+                                groupNameInput = ""
+                                showGroupDialog = true
                             },
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(46.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Layers,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Agrupar",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    Button(
+                        onClick = { showMultiDeferDialog = true },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(46.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = CreditiaTertiary),
+                        shape = RoundedCornerShape(10.dp),
+                        enabled = selectedExpenseIds.isNotEmpty()
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CalendarMonth,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = if (selectedExpenseIds.size > 1) {
+                                    "Diferir (${selectedExpenseIds.size})"
+                                } else {
+                                    "Diferir Consumo"
+                                },
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
                 }
             }
@@ -1479,6 +1619,72 @@ fun ConsumosScreen(
                 showMultiDeferDialog = false
                 viewModel.deferMultipleExpenses(selectedExpenses, months, monthlyInterestRate) {
                     viewModel.clearExpenseSelection()
+                }
+            }
+        )
+    }
+
+    // Modal para agrupar consumos en una sola transacción
+    if (showGroupDialog && selectedExpenseIds.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { showGroupDialog = false },
+            icon = {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(CreditiaPrimary.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Layers,
+                        contentDescription = null,
+                        tint = CreditiaPrimary,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            },
+            title = {
+                Text(
+                    text = "Agrupar en Transacción",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Agrupa los ${selectedExpenseIds.size} consumos seleccionados en un nuevo panel para apreciar que forman parte de una sola transacción.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = groupNameInput,
+                        onValueChange = { groupNameInput = it },
+                        label = { Text("Nombre de la transacción (opcional)") },
+                        placeholder = { Text("Ej. Salida Familiar, Compras Supermercado") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(10.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val name = groupNameInput.trim().ifBlank { null }
+                        showGroupDialog = false
+                        viewModel.groupSelectedExpenses(name)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Agrupar", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGroupDialog = false }) {
+                    Text("Cancelar", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         )
@@ -1906,23 +2112,41 @@ fun ConsumosScreen(
         val calcRange = viewModel.repository.getBillingCycleRange(pToEdit, selectedCard.cutDay)
         val isOver = viewModel.getCustomBillingCycleRange(selectedCard.id, pToEdit) != null
 
+        val curCut = viewModel.getEffectiveCutDateForPeriod(selectedCard, pToEdit)
+        val calcCut = viewModel.getCutDateForPeriod(selectedCard, pToEdit)
+        val isCutOver = viewModel.getCustomCutDate(selectedCard.id, pToEdit) != null
+
+        val curPayment = viewModel.getEffectivePaymentLimitDateForPeriod(selectedCard, pToEdit)
+        val calcPayment = viewModel.getPaymentLimitDateForPeriod(selectedCard, pToEdit)
+        val isPayOver = viewModel.getCustomPaymentLimitDate(selectedCard.id, pToEdit) != null
+
         EditBillingCycleRangeDialog(
             periodName = pToEdit,
             cardName = selectedCard.cardName,
             currentRange = curRange,
             calculatedRange = calcRange,
             isOverridden = isOver,
+            currentCutDate = curCut,
+            currentPaymentDate = curPayment,
+            isCutOverridden = isCutOver,
+            isPaymentOverridden = isPayOver,
             onDismiss = {
                 showEditCycleRangeDialog = false
                 targetPeriodToEdit = null
             },
-            onSaveRange = { newRange ->
-                viewModel.setCustomBillingCycleRange(selectedCard.id, pToEdit, newRange)
+            onSaveAll = { newRange, newCut, newPay ->
+                if (!newRange.isNullOrBlank()) {
+                    viewModel.setCustomBillingCycleRange(selectedCard.id, pToEdit, newRange)
+                }
+                viewModel.setCustomCutDate(selectedCard.id, pToEdit, newCut)
+                viewModel.setCustomPaymentLimitDate(selectedCard.id, pToEdit, newPay)
                 showEditCycleRangeDialog = false
                 targetPeriodToEdit = null
             },
             onResetToCalculated = {
                 viewModel.setCustomBillingCycleRange(selectedCard.id, pToEdit, null)
+                viewModel.setCustomCutDate(selectedCard.id, pToEdit, null)
+                viewModel.setCustomPaymentLimitDate(selectedCard.id, pToEdit, null)
                 showEditCycleRangeDialog = false
                 targetPeriodToEdit = null
             }
@@ -1943,12 +2167,37 @@ fun ExpenseCardItem(
     onReceiptClick: ((receiptUri: String, title: String, subtitle: String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val isPayment = expense.isPayment()
+    val isCreditNote = expense.isCreditNote()
+    val isDeferred = expense.isDeferredExpense()
+
+    val accentColor = when {
+        isPayment -> Color(0xFF10B981) // Verde esmeralda
+        isCreditNote -> Color(0xFF0D9488) // Teal / Nota de crédito
+        isDeferred -> Color(0xFFF59E0B) // Ámbar / Cuota Diferida
+        else -> Color(0xFFEF4444) // Rojo / Consumo regular
+    }
+
+    val cardBorderColor = when {
+        isSelected -> CreditiaPrimary
+        isPayment -> Color(0xFF10B981).copy(alpha = 0.45f)
+        isCreditNote -> Color(0xFF0D9488).copy(alpha = 0.45f)
+        isDeferred -> Color(0xFFF59E0B).copy(alpha = 0.45f)
+        else -> Color(0xFFEF4444).copy(alpha = 0.35f)
+    }
+
+    val cardContainerColor = when {
+        isSelected -> CreditiaPrimary.copy(alpha = 0.08f)
+        isPayment -> Color(0xFF10B981).copy(alpha = 0.04f)
+        isCreditNote -> Color(0xFF0D9488).copy(alpha = 0.04f)
+        isDeferred -> Color(0xFFF59E0B).copy(alpha = 0.04f)
+        else -> CreditiaSurfaceContainerLowest
+    }
+
     Card(
         shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) CreditiaPrimary.copy(alpha = 0.08f) else CreditiaSurfaceContainerLowest
-        ),
-        border = if (isSelected) BorderStroke(1.5.dp, CreditiaPrimary) else null,
+        colors = CardDefaults.cardColors(containerColor = cardContainerColor),
+        border = BorderStroke(if (isSelected) 1.5.dp else 1.dp, cardBorderColor),
         elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 4.dp else 2.dp),
         modifier = modifier
             .fillMaxWidth()
@@ -1971,17 +2220,71 @@ fun ExpenseCardItem(
             )
             .testTag("expense_card_${expense.id}")
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
+        Row(modifier = Modifier.fillMaxWidth()) {
+            // Barra indicadora lateral izquierda con color del tipo de registro
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .heightIn(min = 90.dp)
+                    .fillMaxHeight()
+                    .background(accentColor)
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // Fila superior con Badge de tipo y Periodo
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = accentColor.copy(alpha = 0.14f)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(accentColor)
+                            )
+                            Text(
+                                text = when {
+                                    isPayment -> "PAGO A TARJETA"
+                                    isCreditNote -> "NOTA DE CRÉDITO"
+                                    isDeferred -> "CUOTA DIFERIDA"
+                                    else -> "CONSUMO"
+                                },
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = accentColor,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+                    }
+
+                    Text(
+                        text = expense.billingPeriod,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = CreditiaPrimary
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top
+                ) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -2120,17 +2423,42 @@ fun ExpenseCardItem(
 
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        text = String.format(Locale.US, "$ %,.2f", expense.amount),
+                        text = when {
+                            isPayment -> String.format(Locale.US, "-$ %,.2f", expense.amount)
+                            isCreditNote -> String.format(Locale.US, "-$ %,.2f", expense.amount)
+                            else -> String.format(Locale.US, "$ %,.2f", expense.amount)
+                        },
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = when {
+                            isPayment -> Color(0xFF059669) // Verde
+                            isCreditNote -> Color(0xFF0F766E) // Teal/Verde
+                            isDeferred -> Color(0xFFD97706) // Ámbar
+                            else -> Color(0xFFDC2626) // Rojo
+                        }
                     )
-                    Text(
-                        text = expense.billingPeriod,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = CreditiaPrimary
-                    )
+                    if (isPayment) {
+                        Text(
+                            text = "Abono / Pago",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF059669)
+                        )
+                    } else if (isCreditNote) {
+                        Text(
+                            text = "Anulación Diferido",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF0F766E)
+                        )
+                    } else if (isDeferred) {
+                        Text(
+                            text = "Diferido",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFD97706)
+                        )
+                    }
                 }
             }
 
@@ -2230,3 +2558,185 @@ fun ExpenseCardItem(
         }
     }
 }
+}
+
+/**
+ * Requisito 5: Nuevo panel para apreciar que varios consumos pertenecen a una sola transacción.
+ */
+@Composable
+fun GroupedTransactionCardItem(
+    groupId: String,
+    groupName: String,
+    expenses: List<ExpenseEntity>,
+    totalAmount: Double,
+    dateString: String,
+    selectedExpenseIds: Set<Long>,
+    isSelectionMode: Boolean,
+    allExpenses: List<ExpenseEntity> = emptyList(),
+    onToggleSelect: (Long) -> Unit,
+    onEdit: (ExpenseEntity) -> Unit,
+    onDelete: (ExpenseEntity) -> Unit,
+    onReceiptClick: ((receiptUri: String, title: String, subtitle: String) -> Unit)?,
+    onUngroup: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var isExpanded by remember { mutableStateOf(true) }
+
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = CreditiaSurfaceContainerLow),
+        border = BorderStroke(1.5.dp, CreditiaTertiary.copy(alpha = 0.45f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .testTag("grouped_transaction_card_$groupId")
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Cabecera del Panel de Transacción Agrupada
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { isExpanded = !isExpanded }
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(CreditiaTertiary.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Layers,
+                            contentDescription = "Transacción Agrupada",
+                            tint = CreditiaTertiary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = groupName,
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = CreditiaTertiary.copy(alpha = 0.2f)
+                            ) {
+                                Text(
+                                    text = "${expenses.size} consumos",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = CreditiaTertiary,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                        Text(
+                            text = "Transacción vinculada • $dateString",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = String.format(Locale.US, "$ %,.2f", totalAmount),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Total grupo",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onUngroup,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.LinkOff,
+                            contentDescription = "Desagrupar consumos",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { isExpanded = !isExpanded },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                            contentDescription = if (isExpanded) "Colapsar" else "Expandir",
+                            tint = CreditiaTertiary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+            }
+
+            // Contenido Desplegable con los Consumos Vinculados
+            AnimatedVisibility(
+                visible = isExpanded,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    HorizontalDivider(
+                        color = CreditiaTertiary.copy(alpha = 0.25f),
+                        thickness = 1.dp
+                    )
+
+                    expenses.forEach { childExpense ->
+                        val isChildSelected = childExpense.id in selectedExpenseIds
+                        ExpenseCardItem(
+                            expense = childExpense,
+                            isSelected = isChildSelected,
+                            isSelectionMode = isSelectionMode,
+                            onToggleSelect = { onToggleSelect(childExpense.id) },
+                            onLongPress = { onToggleSelect(childExpense.id) },
+                            onEdit = { onEdit(childExpense) },
+                            onDelete = { onDelete(childExpense) },
+                            onReceiptClick = onReceiptClick
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
