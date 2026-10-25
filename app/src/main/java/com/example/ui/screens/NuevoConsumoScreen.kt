@@ -1511,7 +1511,7 @@ fun NuevoConsumoScreen(
                                 )
                             }
 
-                            if (!isPago && !currentLogoUrl.isNullOrBlank()) {
+                            if (!currentLogoUrl.isNullOrBlank()) {
                                 Surface(
                                     shape = RoundedCornerShape(100.dp),
                                     color = Color(0xFF10B981).copy(alpha = 0.12f)
@@ -1551,7 +1551,7 @@ fun NuevoConsumoScreen(
                                     .weight(1f)
                                     .testTag("input_establishment"),
                                 leadingIcon = {
-                                    if (!isPago && !currentLogoUrl.isNullOrBlank()) {
+                                    if (!currentLogoUrl.isNullOrBlank()) {
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
                                             color = Color.White,
@@ -1594,55 +1594,55 @@ fun NuevoConsumoScreen(
                                 shape = RoundedCornerShape(10.dp)
                             )
 
-                            if (!isPago) {
-                                OutlinedButton(
-                                    onClick = {
-                                        val targetExp = (editing?.copy(establishment = establishment.ifBlank { editing.establishment }))
-                                            ?: ExpenseEntity(
-                                                id = 0L,
-                                                cardId = selectedCard?.id ?: 0L,
-                                                amount = parsedAmount,
-                                                establishment = establishment.ifBlank { "Comercio" },
-                                                description = description,
-                                                dateString = formattedDate,
-                                                billingPeriod = billingPeriod,
-                                                establishmentLogoUrl = currentLogoUrl
-                                            )
-                                        viewModel.openLogoSearchModal(targetExp, initialQuery = establishment.ifBlank { targetExp.establishment })
-                                    },
-                                    shape = RoundedCornerShape(10.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                                    modifier = Modifier
-                                        .height(56.dp)
-                                        .testTag("btn_search_logo_establishment"),
-                                    border = BorderStroke(1.dp, CreditiaPrimary.copy(alpha = 0.5f)),
-                                    colors = ButtonDefaults.outlinedButtonColors(
-                                        containerColor = CreditiaPrimary.copy(alpha = 0.08f),
-                                        contentColor = CreditiaPrimary
-                                    )
+                            val logoBtnColor = if (isPago) Color(0xFF10B981) else CreditiaPrimary
+                            OutlinedButton(
+                                onClick = {
+                                    val targetExp = (editing?.copy(establishment = establishment.ifBlank { editing.establishment }))
+                                        ?: ExpenseEntity(
+                                            id = 0L,
+                                            cardId = selectedCard?.id ?: 0L,
+                                            amount = parsedAmount,
+                                            establishment = establishment.ifBlank { if (isPago) "Pago a Tarjeta" else "Comercio" },
+                                            description = description,
+                                            dateString = formattedDate,
+                                            billingPeriod = billingPeriod,
+                                            establishmentLogoUrl = currentLogoUrl,
+                                            transactionType = transactionType
+                                        )
+                                    viewModel.openLogoSearchModal(targetExp, initialQuery = establishment.ifBlank { if (isPago) "Banco" else targetExp.establishment })
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                modifier = Modifier
+                                    .height(56.dp)
+                                    .testTag("btn_search_logo_establishment"),
+                                border = BorderStroke(1.dp, logoBtnColor.copy(alpha = 0.5f)),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = logoBtnColor.copy(alpha = 0.08f),
+                                    contentColor = logoBtnColor
+                                )
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.Center
                                 ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.AutoAwesome,
-                                            contentDescription = "Buscar logo",
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        Text(
-                                            text = "Buscar logo",
-                                            fontSize = 10.5.sp,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = "Buscar logo",
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Buscar logo",
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                             }
                         }
 
                         // Sugerencias de autocompletado con logos recordados
-                        if (!isPago && suggestions.isNotEmpty()) {
+                        if (suggestions.isNotEmpty()) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()

@@ -198,15 +198,15 @@ class CreditiaRepository(
                 expenseDao.updateExpense(preservedCn)
             }
 
-            // Los consumos originales que fueron seleccionados para diferir NO deben cambiar sus fechas.
-            // Conservan su dateString y billingPeriod originales intactos.
+            // Los consumos originales que fueron seleccionados para diferir NO deben cambiar sus fechas ni sus logos.
+            // Conservan su dateString, billingPeriod y establishmentLogoUrl originales intactos.
             originalPreserved.forEach { orig ->
                 if (orig.id != updatedExpense.id) {
                     val preservedOrig = orig.copy(
                         cardId = updatedExpense.cardId,
                         deferredGroupId = effectiveGroupId,
                         transactionType = ExpenseEntity.TYPE_EXPENSE,
-                        establishmentLogoUrl = updatedExpense.establishmentLogoUrl ?: orig.establishmentLogoUrl
+                        establishmentLogoUrl = orig.establishmentLogoUrl
                     )
                     expenseDao.updateExpense(preservedOrig)
                 }
@@ -589,6 +589,9 @@ class CreditiaRepository(
         cutDay: Int,
         startDateString: String? = null
     ): List<ExpenseEntity> {
+        if (originalExpense.isDeferredInstallment() || originalExpense.isDeferredExpense()) {
+            throw IllegalArgumentException("No se pueden diferir registros de tipo cuota diferida")
+        }
         val effectiveDate = startDateString?.ifBlank { null } ?: originalExpense.dateString
         val plan = calculateInstallmentPlan(
             amount = originalExpense.amount,
@@ -669,6 +672,9 @@ class CreditiaRepository(
         startDateString: String? = null
     ): List<ExpenseEntity> {
         if (selectedExpenses.isEmpty()) return emptyList()
+        if (selectedExpenses.any { it.isDeferredInstallment() || it.isDeferredExpense() }) {
+            throw IllegalArgumentException("No se pueden diferir registros de tipo cuota diferida")
+        }
 
         val totalAmount = selectedExpenses.sumOf { it.amount }
         val effectiveDate = startDateString?.ifBlank { null }
@@ -856,8 +862,14 @@ class CreditiaRepository(
     }
 
     suspend fun updateLogoForDeferredGroup(deferredGroupId: String, logoUrl: String?): Int {
-        val count = expenseDao.updateLogoByDeferredGroupId(deferredGroupId, logoUrl)
-        syncLogosForDeferredGroup(deferredGroupId)
+        val group = expenseDao.getExpensesByDeferredGroupId(deferredGroupId)
+        var count = 0
+        group.forEach { exp ->
+            if (exp.isCreditNote() || exp.isDeferredInstallment()) {
+                expenseDao.updateExpense(exp.copy(establishmentLogoUrl = logoUrl))
+                count++
+            }
+        }
         return count
     }
 

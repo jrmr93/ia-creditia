@@ -1573,7 +1573,14 @@ fun ConsumosScreen(
                     }
 
                     Button(
-                        onClick = { showMultiDeferDialog = true },
+                        onClick = {
+                            val selectedExpenses = allExpenses.filter { it.id in selectedExpenseIds }
+                            if (selectedExpenses.any { it.isDeferredInstallment() || it.isDeferredExpense() }) {
+                                viewModel.showToast("No se pueden diferir registros de tipo cuota diferida")
+                            } else {
+                                showMultiDeferDialog = true
+                            }
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .height(46.dp),
@@ -2184,25 +2191,14 @@ fun ExpenseCardItem(
                                 color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f))
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                Text(
+                                    text = "BLOQUEADO",
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.error,
+                                    letterSpacing = 0.5.sp,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Lock,
-                                        contentDescription = "Bloqueado",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(10.dp)
-                                    )
-                                    Text(
-                                        text = "BLOQUEADO",
-                                        fontSize = 9.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.error,
-                                        letterSpacing = 0.5.sp
-                                    )
-                                }
+                                )
                             }
                         }
                     }
@@ -2239,14 +2235,7 @@ fun ExpenseCardItem(
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (isLocked) {
-                                Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = "Bloqueado",
-                                    tint = MaterialTheme.colorScheme.outline,
-                                    modifier = Modifier.size(13.dp)
-                                )
-                            } else if (isSelected) {
+                            if (isSelected) {
                                 Icon(
                                     imageVector = Icons.Default.Check,
                                     contentDescription = "Seleccionado",
@@ -2465,35 +2454,37 @@ fun ExpenseCardItem(
                     }
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    IconButton(
-                        onClick = onEdit,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .testTag("btn_edit_expense_${expense.id}")
+                if (!isLocked) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Icon(
-                            imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Edit,
-                            contentDescription = if (isLocked) "Bloqueado (no se puede editar)" else "Editar",
-                            tint = if (isLocked) MaterialTheme.colorScheme.error.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    IconButton(
-                        onClick = onDelete,
-                        modifier = Modifier
-                            .size(44.dp)
-                            .testTag("btn_delete_expense_${expense.id}")
-                    ) {
-                        Icon(
-                            imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Delete,
-                            contentDescription = if (isLocked) "Bloqueado (no se puede eliminar)" else "Eliminar",
-                            tint = if (isLocked) MaterialTheme.colorScheme.error.copy(alpha = 0.7f) else CreditiaError,
-                            modifier = Modifier.size(20.dp)
-                        )
+                        IconButton(
+                            onClick = onEdit,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .testTag("btn_edit_expense_${expense.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = "Editar",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = onDelete,
+                            modifier = Modifier
+                                .size(44.dp)
+                                .testTag("btn_delete_expense_${expense.id}")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Eliminar",
+                                tint = CreditiaError,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
                 }
             }
@@ -2583,8 +2574,8 @@ fun GroupedTransactionCardItem(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+                .padding(horizontal = 10.dp, vertical = 2.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp)
         ) {
             // Cabecera del Panel de Transacción Agrupada
             Row(
@@ -2603,8 +2594,8 @@ fun GroupedTransactionCardItem(
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(8.dp))
+                            .size(28.dp)
+                            .clip(RoundedCornerShape(6.dp))
                             .background(CreditiaTertiary.copy(alpha = 0.15f)),
                         contentAlignment = Alignment.Center
                     ) {
@@ -2612,40 +2603,16 @@ fun GroupedTransactionCardItem(
                             imageVector = Icons.Default.Layers,
                             contentDescription = "Transacción Agrupada",
                             tint = CreditiaTertiary,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
 
-                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = groupName,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = CreditiaTertiary.copy(alpha = 0.2f)
-                            ) {
-                                Text(
-                                    text = "${expenses.size} consumos",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = CreditiaTertiary,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                                )
-                            }
-                        }
-                        Text(
-                            text = "Transacción vinculada • $dateString",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(
+                        text = groupName,
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
                 }
 
                 Row(

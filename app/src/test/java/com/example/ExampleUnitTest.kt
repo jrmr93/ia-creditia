@@ -1119,8 +1119,94 @@ class ExampleUnitTest {
     repo.updateLogoForDeferredGroup(groupId, "/data/user/0/com.example/files/logos/logo_marathon_v2.png")
     val updatedAll = expenseDao.getExpensesByDeferredGroupId(groupId)
     updatedAll.forEach { item ->
-      assertEquals("/data/user/0/com.example/files/logos/logo_marathon_v2.png", item.establishmentLogoUrl)
+      if (item.id == original.id) {
+        // El consumo original que se utilizó para crear el diferido nunca altera su logo
+        assertEquals("/data/user/0/com.example/files/logos/logo_marathon.png", item.establishmentLogoUrl)
+      } else {
+        // Los registros creados por consecuencia (nota de crédito y cuotas) sí actualizan su logo
+        assertEquals("/data/user/0/com.example/files/logos/logo_marathon_v2.png", item.establishmentLogoUrl)
+      }
     }
+  }
+
+  @Test
+  fun testCannotDeferDeferredInstallmentsAndPreservesOriginalIntegrity() = kotlinx.coroutines.runBlocking {
+    val expenseDao = FakeExpenseDao()
+    val cardDao = FakeCreditCardDao()
+    val repo = com.example.data.repository.CreditiaRepository(cardDao, expenseDao)
+
+    val exp1 = com.example.data.model.ExpenseEntity(
+      id = 401,
+      cardId = 1,
+      sequenceNumber = 1,
+      establishment = "Supermaxi",
+      description = "Compras de víveres",
+      amount = 120.0,
+      dateString = "2026/10/02",
+      billingPeriod = "Octubre 2026",
+      establishmentLogoUrl = "/logos/supermaxi.png"
+    )
+    val exp2 = com.example.data.model.ExpenseEntity(
+      id = 402,
+      cardId = 1,
+      sequenceNumber = 2,
+      establishment = "Marathon",
+      description = "Zapatos deportivos",
+      amount = 180.0,
+      dateString = "2026/10/05",
+      billingPeriod = "Octubre 2026",
+      establishmentLogoUrl = "/logos/marathon.png"
+    )
+    expenseDao.insertExpense(exp1)
+    expenseDao.insertExpense(exp2)
+
+    // 1. Diferir múltiples registros
+    val deferredRes = repo.deferMultipleExpenses(
+      selectedExpenses = listOf(exp1, exp2),
+      months = 3,
+      monthlyInterestRate = 0.0,
+      cutDay = 24,
+      startDateString = "2026/10/05"
+    )
+    assertTrue(deferredRes.isNotEmpty())
+
+    // 2. Verificar que los registros originales conservaron sus fechas y logos individuales
+    val savedExp1 = expenseDao.getExpenseById(401)
+    val savedExp2 = expenseDao.getExpenseById(402)
+    assertNotNull(savedExp1)
+    assertNotNull(savedExp2)
+    assertEquals("2026/10/02", savedExp1!!.dateString)
+    assertEquals("/logos/supermaxi.png", savedExp1.establishmentLogoUrl)
+    assertEquals("2026/10/05", savedExp2!!.dateString)
+    assertEquals("/logos/marathon.png", savedExp2.establishmentLogoUrl)
+
+    // 3. Verificar que los nuevos registros (cuotas y nota de crédito) unieron los logos
+    val cuotas = deferredRes.filter { it.isDeferredInstallment() }
+    val notaCredito = deferredRes.find { it.isCreditNote() }
+    assertNotNull(notaCredito)
+    assertEquals("/logos/supermaxi.png|/logos/marathon.png", notaCredito!!.establishmentLogoUrl)
+    cuotas.forEach { cuota ->
+      assertEquals("/logos/supermaxi.png|/logos/marathon.png", cuota.establishmentLogoUrl)
+    }
+
+    // 4. Validar que no se puede diferir un registro de tipo cuota diferida
+    var threwException = false
+    try {
+      repo.deferExpense(cuotas.first(), 3, 0.0, 24)
+    } catch (e: IllegalArgumentException) {
+      threwException = true
+      assertEquals("No se pueden diferir registros de tipo cuota diferida", e.message)
+    }
+    assertTrue("Debe lanzar excepción al intentar diferir una cuota diferida individual", threwException)
+
+    threwException = false
+    try {
+      repo.deferMultipleExpenses(listOf(cuotas.first()), 3, 0.0, 24)
+    } catch (e: IllegalArgumentException) {
+      threwException = true
+      assertEquals("No se pueden diferir registros de tipo cuota diferida", e.message)
+    }
+    assertTrue("Debe lanzar excepción al intentar diferir una lista que contiene cuotas diferidas", threwException)
   }
 
   @Test

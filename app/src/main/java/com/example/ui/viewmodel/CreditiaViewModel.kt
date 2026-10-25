@@ -1372,6 +1372,10 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         startDateString: String? = null,
         onSuccess: () -> Unit
     ) {
+        if (originalExpense.isDeferredInstallment() || originalExpense.isDeferredExpense()) {
+            showToast("No se pueden diferir registros de tipo cuota diferida")
+            return
+        }
         viewModelScope.launch {
             try {
                 val card = _uiState.value.cards.find { it.id == originalExpense.cardId } ?: _uiState.value.selectedCard
@@ -1406,6 +1410,10 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         startDateString: String? = null,
         onSuccess: () -> Unit
     ) {
+        if (selectedExpenses.any { it.isDeferredInstallment() || it.isDeferredExpense() }) {
+            showToast("No se pueden diferir registros de tipo cuota diferida")
+            return
+        }
         viewModelScope.launch {
             try {
                 if (selectedExpenses.isEmpty()) return@launch
