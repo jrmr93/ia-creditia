@@ -592,6 +592,9 @@ class CreditiaRepository(
         if (originalExpense.isDeferredInstallment() || originalExpense.isDeferredExpense()) {
             throw IllegalArgumentException("No se pueden diferir registros de tipo cuota diferida")
         }
+        if (originalExpense.isPayment()) {
+            throw IllegalArgumentException("No se pueden diferir registros de tipo pago a tarjeta")
+        }
         val effectiveDate = startDateString?.ifBlank { null } ?: originalExpense.dateString
         val plan = calculateInstallmentPlan(
             amount = originalExpense.amount,
@@ -674,6 +677,9 @@ class CreditiaRepository(
         if (selectedExpenses.isEmpty()) return emptyList()
         if (selectedExpenses.any { it.isDeferredInstallment() || it.isDeferredExpense() }) {
             throw IllegalArgumentException("No se pueden diferir registros de tipo cuota diferida")
+        }
+        if (selectedExpenses.any { it.isPayment() }) {
+            throw IllegalArgumentException("No se pueden diferir registros de tipo pago a tarjeta")
         }
 
         val totalAmount = selectedExpenses.sumOf { it.amount }

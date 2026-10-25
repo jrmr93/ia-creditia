@@ -1207,6 +1207,38 @@ class ExampleUnitTest {
       assertEquals("No se pueden diferir registros de tipo cuota diferida", e.message)
     }
     assertTrue("Debe lanzar excepción al intentar diferir una lista que contiene cuotas diferidas", threwException)
+
+    // 5. Validar que no se puede diferir un registro de tipo pago a tarjeta
+    val payment = com.example.data.model.ExpenseEntity(
+      id = 405,
+      cardId = 1,
+      sequenceNumber = 5,
+      establishment = "Transferencia Banco Pichincha",
+      description = "Pago de tarjeta",
+      amount = 100.0,
+      dateString = "2026/10/12",
+      billingPeriod = "Octubre 2026",
+      transactionType = com.example.data.model.ExpenseEntity.TYPE_PAYMENT
+    )
+    expenseDao.insertExpense(payment)
+
+    var paymentThrew = false
+    try {
+      repo.deferExpense(payment, 3, 0.0, 24)
+    } catch (e: IllegalArgumentException) {
+      paymentThrew = true
+      assertEquals("No se pueden diferir registros de tipo pago a tarjeta", e.message)
+    }
+    assertTrue("Debe lanzar excepción al intentar diferir un pago a tarjeta individual", paymentThrew)
+
+    paymentThrew = false
+    try {
+      repo.deferMultipleExpenses(listOf(payment), 3, 0.0, 24)
+    } catch (e: IllegalArgumentException) {
+      paymentThrew = true
+      assertEquals("No se pueden diferir registros de tipo pago a tarjeta", e.message)
+    }
+    assertTrue("Debe lanzar excepción al intentar diferir una lista con pago a tarjeta", paymentThrew)
   }
 
   @Test

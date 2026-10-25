@@ -1376,6 +1376,10 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             showToast("No se pueden diferir registros de tipo cuota diferida")
             return
         }
+        if (originalExpense.isPayment()) {
+            showToast("No se pueden diferir registros de tipo pago a tarjeta")
+            return
+        }
         viewModelScope.launch {
             try {
                 val card = _uiState.value.cards.find { it.id == originalExpense.cardId } ?: _uiState.value.selectedCard
@@ -1412,6 +1416,10 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     ) {
         if (selectedExpenses.any { it.isDeferredInstallment() || it.isDeferredExpense() }) {
             showToast("No se pueden diferir registros de tipo cuota diferida")
+            return
+        }
+        if (selectedExpenses.any { it.isPayment() }) {
+            showToast("No se pueden diferir registros de tipo pago a tarjeta")
             return
         }
         viewModelScope.launch {

@@ -1577,6 +1577,8 @@ fun ConsumosScreen(
                             val selectedExpenses = allExpenses.filter { it.id in selectedExpenseIds }
                             if (selectedExpenses.any { it.isDeferredInstallment() || it.isDeferredExpense() }) {
                                 viewModel.showToast("No se pueden diferir registros de tipo cuota diferida")
+                            } else if (selectedExpenses.any { it.isPayment() }) {
+                                viewModel.showToast("No se pueden diferir registros de tipo pago a tarjeta")
                             } else {
                                 showMultiDeferDialog = true
                             }
@@ -2564,7 +2566,7 @@ fun GroupedTransactionCardItem(
     Card(
         shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = CreditiaSurfaceContainerLow),
-        border = BorderStroke(1.5.dp, CreditiaTertiary.copy(alpha = 0.45f)),
+        border = BorderStroke(1.5.dp, Color.Black),
         elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
         modifier = modifier
             .fillMaxWidth()
@@ -2596,13 +2598,13 @@ fun GroupedTransactionCardItem(
                         modifier = Modifier
                             .size(28.dp)
                             .clip(RoundedCornerShape(6.dp))
-                            .background(CreditiaTertiary.copy(alpha = 0.15f)),
+                            .background(Color.Black.copy(alpha = 0.08f)),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             imageVector = Icons.Default.Layers,
                             contentDescription = "Transacción Agrupada",
-                            tint = CreditiaTertiary,
+                            tint = Color.Black,
                             modifier = Modifier.size(16.dp)
                         )
                     }
@@ -2652,7 +2654,7 @@ fun GroupedTransactionCardItem(
                         Icon(
                             imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                             contentDescription = if (isExpanded) "Colapsar" else "Expandir",
-                            tint = CreditiaTertiary,
+                            tint = Color.Black,
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -2672,7 +2674,7 @@ fun GroupedTransactionCardItem(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     HorizontalDivider(
-                        color = CreditiaTertiary.copy(alpha = 0.25f),
+                        color = Color.Black.copy(alpha = 0.18f),
                         thickness = 1.dp
                     )
 
