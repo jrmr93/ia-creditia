@@ -51,6 +51,10 @@ class CreditiaRepository(
         }
     }
 
+    suspend fun updateExpenses(expenses: List<ExpenseEntity>) {
+        expenseDao.updateExpenses(expenses)
+    }
+
     /**
      * Updates an expense. If the expense is part of a deferred consumption group,
      * reorganizes all installments in the group:
@@ -61,7 +65,8 @@ class CreditiaRepository(
      */
     suspend fun updateExpenseWithDeferredSync(
         updatedExpense: ExpenseEntity,
-        cutDay: Int
+        cutDay: Int,
+        periodResolver: ((String) -> String)? = null
     ): Int {
         val originalInDb = expenseDao.getExpenseById(updatedExpense.id)
         val group = if (!updatedExpense.deferredGroupId.isNullOrBlank()) {
@@ -146,7 +151,7 @@ class CreditiaRepository(
                     cal.get(Calendar.MONTH) + 1,
                     cal.get(Calendar.DAY_OF_MONTH)
                 )
-                val installmentBillingPeriod = calculateBillingPeriod(installmentDateStr, cutDay)
+                val installmentBillingPeriod = periodResolver?.invoke(installmentDateStr) ?: calculateBillingPeriod(installmentDateStr, cutDay)
                 val newDesc = if (cleanBaseDesc.isNotBlank()) {
                     "$cleanBaseDesc (Cuota $cuotaNum/$totalInstallments)"
                 } else {
@@ -220,7 +225,7 @@ class CreditiaRepository(
             val updatedOrig = updatedExpense.copy(
                 cardId = updatedExpense.cardId,
                 deferredGroupId = effectiveGroupId,
-                billingPeriod = calculateBillingPeriod(updatedExpense.dateString, cutDay),
+                billingPeriod = periodResolver?.invoke(updatedExpense.dateString) ?: calculateBillingPeriod(updatedExpense.dateString, cutDay),
                 transactionType = ExpenseEntity.TYPE_EXPENSE
             )
             expenseDao.updateExpense(updatedOrig)
@@ -445,38 +450,128 @@ class CreditiaRepository(
      * Si el día de la transacción es > cutDay, pertenece al periodo del mes siguiente.
      * Ejemplo: con corte día 24, el periodo de Octubre 2026 abarca desde el 25 de septiembre hasta el 24 de octubre.
      */
-    fun calculateBillingPeriod(dateString: String, cutDay: Int): String {
+    /**
+     * Calcula el Periodo de Facturación (ej. "Octubre 2026") según la fecha de la transacción (YYYY/MM/DD),
+     * el día de corte nominal de la tarjeta (cutDay) y cualquier rango de facturación o fecha de corte personalizado.
+     * Toma en cuenta que las fechas de los periodos pueden haber sido modificadas manualmente por el usuario.
+     */
+    fun calculateBillingPeriod(
+        dateString: String,
+        cutDay: Int,
+        customCycleRanges: Map<String, String> = emptyMap(),
+        customCutDates: Map<String, String> = emptyMap()
+    ): String {
         return try {
             val parts = dateString.split("/")
-            if (parts.size == 3) {
-                val year = parts[0].toInt()
-                val month = parts[1].toInt() // 1-12
-                val day = parts[2].toInt()
+            if (parts.size != 3) return "Octubre 2026"
+            val targetYear = parts[0].toInt()
+            val targetMonth = parts[1].toInt() // 1-12
+            val targetDay = parts[2].toInt()
+            val formattedTargetDate = String.format(Locale.US, "%04d/%02d/%02d", targetYear, targetMonth, targetDay)
 
-                val cal = Calendar.getInstance()
-                cal.set(Calendar.YEAR, year)
-                cal.set(Calendar.MONTH, month - 1)
-                cal.set(Calendar.DAY_OF_MONTH, day)
+            val monthNames = arrayOf(
+                "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+            )
 
-                // El día de corte de la tarjeta está determinado en la configuración
-                val maxDay = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
-                val periodCutDay = cutDay.coerceIn(1, maxDay)
+            fun normalizeDate(raw: String): String? {
+                val clean = raw.replace(Regex("""^[A-Za-zÁÉÍÓÚáéíóúñÑ.,\s]+"""), "").trim()
+                val slashParts = clean.split("/")
+                return if (slashParts.size == 3) {
+                    try {
+                        if (slashParts[0].length == 4) {
+                            String.format(Locale.US, "%04d/%02d/%02d", slashParts[0].toInt(), slashParts[1].toInt(), slashParts[2].toInt())
+                        } else {
+                            String.format(Locale.US, "%04d/%02d/%02d", slashParts[2].toInt(), slashParts[1].toInt(), slashParts[0].toInt())
+                        }
+                    } catch (_: Exception) { null }
+                } else null
+            }
 
-                if (day > periodCutDay) {
-                    // Cae después del corte -> pertenece al siguiente periodo
-                    cal.add(Calendar.MONTH, 1)
+            // 1. Coincidencia directa en rangos personalizados explícitos
+            if (customCycleRanges.isNotEmpty()) {
+                for ((periodName, rangeStr) in customCycleRanges) {
+                    val rangeParts = rangeStr.split("-").map { it.trim() }
+                    if (rangeParts.size == 2) {
+                        val start = normalizeDate(rangeParts[0])
+                        val end = normalizeDate(rangeParts[1])
+                        if (start != null && end != null) {
+                            if (formattedTargetDate in start..end) {
+                                return periodName
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Si no coincide directamente con ningún rango personalizado explícito,
+            // evaluamos la secuencia cronológica de periodos considerando fechas de corte efectivas.
+            val baseCal = Calendar.getInstance().apply {
+                set(Calendar.YEAR, targetYear)
+                set(Calendar.MONTH, targetMonth - 1)
+                set(Calendar.DAY_OF_MONTH, 1)
+            }
+
+            data class PeriodWindow(val name: String, val year: Int, val monthIndex: Int)
+            val window = mutableListOf<PeriodWindow>()
+            for (offset in -12..12) {
+                val c = (baseCal.clone() as Calendar).apply { add(Calendar.MONTH, offset) }
+                val yr = c.get(Calendar.YEAR)
+                val mIdx = c.get(Calendar.MONTH)
+                window.add(PeriodWindow("${monthNames[mIdx]} $yr", yr, mIdx))
+            }
+
+            fun getEffectiveCut(pw: PeriodWindow): String {
+                val customRange = customCycleRanges[pw.name]
+                if (!customRange.isNullOrBlank()) {
+                    val rangeParts = customRange.split("-").map { it.trim() }
+                    if (rangeParts.size == 2) {
+                        val end = normalizeDate(rangeParts[1])
+                        if (end != null) return end
+                    }
+                }
+                val customCut = customCutDates[pw.name]
+                if (!customCut.isNullOrBlank()) {
+                    val parsedCut = normalizeDate(customCut)
+                    if (parsedCut != null) return parsedCut
+                }
+                val cutCal = getCutCalendar(pw.year, pw.monthIndex, cutDay)
+                return String.format(Locale.US, "%04d/%02d/%02d", cutCal.get(Calendar.YEAR), cutCal.get(Calendar.MONTH) + 1, cutCal.get(Calendar.DAY_OF_MONTH))
+            }
+
+            for (i in window.indices) {
+                val curPeriod = window[i]
+                val cutDate = getEffectiveCut(curPeriod)
+
+                val prevCutDate = if (i > 0) {
+                    getEffectiveCut(window[i - 1])
+                } else {
+                    val prevCal = (baseCal.clone() as Calendar).apply {
+                        set(Calendar.YEAR, curPeriod.year)
+                        set(Calendar.MONTH, curPeriod.monthIndex)
+                        add(Calendar.MONTH, -1)
+                    }
+                    val prevCut = getCutCalendar(prevCal.get(Calendar.YEAR), prevCal.get(Calendar.MONTH), cutDay)
+                    String.format(Locale.US, "%04d/%02d/%02d", prevCut.get(Calendar.YEAR), prevCut.get(Calendar.MONTH) + 1, prevCut.get(Calendar.DAY_OF_MONTH))
                 }
 
-                val monthNames = arrayOf(
-                    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-                    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
-                )
-                val periodMonth = monthNames[cal.get(Calendar.MONTH)]
-                val periodYear = cal.get(Calendar.YEAR)
-                "$periodMonth $periodYear"
-            } else {
-                "Octubre 2026"
+                if (formattedTargetDate > prevCutDate && formattedTargetDate <= cutDate) {
+                    return curPeriod.name
+                }
             }
+
+            // Fallback estándar por corte si queda fuera de la ventana
+            val cal = Calendar.getInstance().apply {
+                set(Calendar.YEAR, targetYear)
+                set(Calendar.MONTH, targetMonth - 1)
+                set(Calendar.DAY_OF_MONTH, targetDay)
+            }
+            val maxDay = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+            val periodCutDay = cutDay.coerceIn(1, maxDay)
+            if (targetDay > periodCutDay) {
+                cal.add(Calendar.MONTH, 1)
+            }
+            "${monthNames[cal.get(Calendar.MONTH)]} ${cal.get(Calendar.YEAR)}"
         } catch (e: Exception) {
             "Octubre 2026"
         }
@@ -484,11 +579,20 @@ class CreditiaRepository(
 
     /**
      * Calcula el rango de fechas de facturación para un periodo determinado.
-     * Regla 1:
-     * El rango va desde el día siguiente al corte del mes anterior hasta el día de corte de este periodo.
-     * Ejemplo: Para Octubre 2026 con corte 24, el rango es desde 25 de septiembre hasta 24 de octubre (2026/09/25 - 2026/10/24).
+     * Si el periodo o periodos adyacentes tienen rangos o fechas de corte modificadas manualmente,
+     * se calculan las fechas efectivas respetando esas modificaciones.
      */
-    fun getBillingCycleRange(periodName: String, cutDay: Int): String {
+    fun getBillingCycleRange(
+        periodName: String,
+        cutDay: Int,
+        customCycleRanges: Map<String, String> = emptyMap(),
+        customCutDates: Map<String, String> = emptyMap()
+    ): String {
+        val custom = customCycleRanges[periodName]
+        if (!custom.isNullOrBlank()) {
+            return custom
+        }
+
         return try {
             val parts = periodName.split(" ")
             if (parts.size == 2) {
@@ -500,20 +604,64 @@ class CreditiaRepository(
                 )
                 val monthIndex = monthNames.indexOf(monthName)
                 if (monthIndex != -1) {
-                    val endCal = getCutCalendar(year, monthIndex, cutDay)
+                    fun normalizeDate(raw: String): String? {
+                        val clean = raw.replace(Regex("""^[A-Za-zÁÉÍÓÚáéíóúñÑ.,\s]+"""), "").trim()
+                        val slashParts = clean.split("/")
+                        return if (slashParts.size == 3) {
+                            try {
+                                if (slashParts[0].length == 4) {
+                                    String.format(Locale.US, "%04d/%02d/%02d", slashParts[0].toInt(), slashParts[1].toInt(), slashParts[2].toInt())
+                                } else {
+                                    String.format(Locale.US, "%04d/%02d/%02d", slashParts[2].toInt(), slashParts[1].toInt(), slashParts[0].toInt())
+                                }
+                            } catch (_: Exception) { null }
+                        } else null
+                    }
 
-                    val prevMonthCal = Calendar.getInstance().apply {
-                        timeInMillis = endCal.timeInMillis
+                    // 1. Fecha de corte / fin del periodo
+                    val endStr: String
+                    val customCut = customCutDates[periodName]
+                    if (!customCut.isNullOrBlank() && normalizeDate(customCut) != null) {
+                        endStr = normalizeDate(customCut)!!
+                    } else {
+                        val endCal = getCutCalendar(year, monthIndex, cutDay)
+                        val sdf = SimpleDateFormat("yyyy/MM/dd", Locale.US)
+                        endStr = sdf.format(endCal.time)
+                    }
+
+                    // 2. Fecha de inicio: día después del corte del periodo anterior
+                    val prevCal = Calendar.getInstance().apply {
+                        set(Calendar.YEAR, year)
+                        set(Calendar.MONTH, monthIndex)
                         add(Calendar.MONTH, -1)
                     }
-                    val prevCut = getCutCalendar(prevMonthCal.get(Calendar.YEAR), prevMonthCal.get(Calendar.MONTH), cutDay)
+                    val prevMonthName = monthNames[prevCal.get(Calendar.MONTH)]
+                    val prevYear = prevCal.get(Calendar.YEAR)
+                    val prevPeriodName = "$prevMonthName $prevYear"
+
+                    val prevCustomRange = customCycleRanges[prevPeriodName]
+                    val prevCutStr = if (!prevCustomRange.isNullOrBlank()) {
+                        val rParts = prevCustomRange.split("-").map { it.trim() }
+                        if (rParts.size == 2) normalizeDate(rParts[1]) else null
+                    } else null
+
+                    val effectivePrevCutStr = prevCutStr
+                        ?: customCutDates[prevPeriodName]?.let { normalizeDate(it) }
+                        ?: run {
+                            val prevCut = getCutCalendar(prevYear, prevCal.get(Calendar.MONTH), cutDay)
+                            val sdf = SimpleDateFormat("yyyy/MM/dd", Locale.US)
+                            sdf.format(prevCut.time)
+                        }
+
                     val startCal = Calendar.getInstance().apply {
-                        timeInMillis = prevCut.timeInMillis
+                        val pParts = effectivePrevCutStr.split("/")
+                        set(pParts[0].toInt(), pParts[1].toInt() - 1, pParts[2].toInt())
                         add(Calendar.DAY_OF_MONTH, 1)
                     }
-
                     val sdf = SimpleDateFormat("yyyy/MM/dd", Locale.US)
-                    "${sdf.format(startCal.time)} - ${sdf.format(endCal.time)}"
+                    val startStr = sdf.format(startCal.time)
+
+                    "$startStr - $endStr"
                 } else {
                     "2026/09/25 - 2026/10/24"
                 }
@@ -543,7 +691,8 @@ class CreditiaRepository(
         months: Int,
         monthlyInterestRate: Double,
         startDateString: String,
-        cutDay: Int
+        cutDay: Int,
+        periodResolver: ((String) -> String)? = null
     ): List<InstallmentPreview> {
         val i = monthlyInterestRate / 100.0
         val installmentAmount = if (i > 0) {
@@ -565,7 +714,7 @@ class CreditiaRepository(
                 cal.add(Calendar.MONTH, 1)
             }
             val dateStr = String.format(Locale.US, "%04d/%02d/%02d", cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH))
-            val period = calculateBillingPeriod(dateStr, cutDay)
+            val period = periodResolver?.invoke(dateStr) ?: calculateBillingPeriod(dateStr, cutDay)
             previews.add(
                 InstallmentPreview(
                     installmentNumber = k,
@@ -589,7 +738,8 @@ class CreditiaRepository(
         months: Int,
         monthlyInterestRate: Double,
         cutDay: Int,
-        startDateString: String? = null
+        startDateString: String? = null,
+        periodResolver: ((String) -> String)? = null
     ): List<ExpenseEntity> {
         if (originalExpense.isDeferredInstallment() || originalExpense.isDeferredExpense()) {
             throw IllegalArgumentException("No se pueden diferir registros de tipo cuota diferida")
@@ -603,7 +753,8 @@ class CreditiaRepository(
             months = months,
             monthlyInterestRate = monthlyInterestRate,
             startDateString = effectiveDate,
-            cutDay = cutDay
+            cutDay = cutDay,
+            periodResolver = periodResolver
         )
 
         val baseDescription = originalExpense.description.replace(Regex("\\s*\\(Cuota\\s*\\d+/\\d+\\)"), "").trim()
@@ -618,7 +769,7 @@ class CreditiaRepository(
 
         // 2. Crear registro total de Nota de Crédito para anular el consumo diferido
         var currentSeq = getNextSequenceNumber()
-        val latestBillingPeriod = calculateBillingPeriod(effectiveDate, cutDay)
+        val latestBillingPeriod = periodResolver?.invoke(effectiveDate) ?: calculateBillingPeriod(effectiveDate, cutDay)
         val notaCredito = ExpenseEntity(
             sequenceNumber = currentSeq++,
             cardId = originalExpense.cardId,
@@ -674,7 +825,8 @@ class CreditiaRepository(
         months: Int,
         monthlyInterestRate: Double,
         cutDay: Int,
-        startDateString: String? = null
+        startDateString: String? = null,
+        periodResolver: ((String) -> String)? = null
     ): List<ExpenseEntity> {
         if (selectedExpenses.isEmpty()) return emptyList()
         if (selectedExpenses.any { it.isDeferredInstallment() || it.isDeferredExpense() }) {
@@ -698,7 +850,8 @@ class CreditiaRepository(
             months = months,
             monthlyInterestRate = monthlyInterestRate,
             startDateString = effectiveDate,
-            cutDay = cutDay
+            cutDay = cutDay,
+            periodResolver = periodResolver
         )
 
         val groupId = "def_multi_${System.currentTimeMillis()}"
@@ -730,7 +883,7 @@ class CreditiaRepository(
 
         // 2. Crear un registro total de Nota de Crédito por el monto total diferido
         // Debe contener todos los logotipos de los consumos seleccionados para diferir
-        val latestBillingPeriod = calculateBillingPeriod(effectiveDate, cutDay)
+        val latestBillingPeriod = periodResolver?.invoke(effectiveDate) ?: calculateBillingPeriod(effectiveDate, cutDay)
         val notaCredito = ExpenseEntity(
             sequenceNumber = currentSeq++,
             cardId = cardId,
@@ -786,14 +939,16 @@ class CreditiaRepository(
         monthlyInterestRate: Double,
         receiptUri: String?,
         cutDay: Int,
-        establishmentLogoUrl: String? = null
+        establishmentLogoUrl: String? = null,
+        periodResolver: ((String) -> String)? = null
     ): List<ExpenseEntity> {
         val plan = calculateInstallmentPlan(
             amount = totalAmount,
             months = months,
             monthlyInterestRate = monthlyInterestRate,
             startDateString = startDateString,
-            cutDay = cutDay
+            cutDay = cutDay,
+            periodResolver = periodResolver
         )
 
         val cleanDesc = description.ifBlank { "Consumo diferido" }

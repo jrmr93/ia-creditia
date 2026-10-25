@@ -4,6 +4,7 @@ import org.junit.Assert.*
 import org.junit.Test
 import java.util.Calendar
 import java.util.Locale
+import com.example.data.repository.CreditiaRepository
 
 class ExampleUnitTest {
   @Test
@@ -1576,6 +1577,42 @@ class ImageSearchTest {
 
     val afterNc = expenseDao.getExpenseById(dbNc.id)
     assertEquals("La nota de crédito sí debe actualizar su fecha", "2026/12/01", afterNc?.dateString)
+  }
+
+  @Test
+  fun testCustomBillingPeriodValidationAndAssignment() {
+    val repo = CreditiaRepository(FakeCreditCardDao(), FakeExpenseDao())
+
+    // 1. Cálculo por defecto (sin rangos personalizados) con cutDay = 24
+    assertEquals("Octubre 2026", repo.calculateBillingPeriod("2026/10/20", 24))
+    assertEquals("Octubre 2026", repo.calculateBillingPeriod("2026/10/24", 24))
+    assertEquals("Noviembre 2026", repo.calculateBillingPeriod("2026/10/25", 24))
+
+    // 2. Modificación manual: Octubre 2026 se recorta para terminar el 20 de octubre (2026/09/25 - 2026/10/20)
+    val customRangesOct20 = mapOf("Octubre 2026" to "2026/09/25 - 2026/10/20")
+    // Dentro de Octubre modificado
+    assertEquals("Octubre 2026", repo.calculateBillingPeriod("2026/10/20", 24, customRangesOct20))
+    // Fuera de Octubre modificado -> DEBE pasar a Noviembre 2026
+    assertEquals("Noviembre 2026", repo.calculateBillingPeriod("2026/10/21", 24, customRangesOct20))
+    assertEquals("Noviembre 2026", repo.calculateBillingPeriod("2026/10/22", 24, customRangesOct20))
+    assertEquals("Noviembre 2026", repo.calculateBillingPeriod("2026/10/24", 24, customRangesOct20))
+
+    // El rango calculado para Noviembre 2026 debe iniciar el 21 de octubre (día siguiente al corte anterior)
+    val novRange = repo.getBillingCycleRange("Noviembre 2026", 24, customRangesOct20)
+    assertEquals("2026/10/21 - 2026/11/24", novRange)
+
+    // 3. Modificación manual: Octubre 2026 se extiende hasta el 28 de octubre
+    val customRangesOct28 = mapOf("Octubre 2026" to "2026/09/25 - 2026/10/28")
+    // El 26 de octubre normalmente sería Noviembre (26 > 24), pero al extenderse Octubre pertenece a Octubre
+    assertEquals("Octubre 2026", repo.calculateBillingPeriod("2026/10/26", 24, customRangesOct28))
+    assertEquals("Octubre 2026", repo.calculateBillingPeriod("2026/10/28", 24, customRangesOct28))
+    assertEquals("Noviembre 2026", repo.calculateBillingPeriod("2026/10/29", 24, customRangesOct28))
+
+    // 4. Modificación manual: Octubre 2026 inicia antes (2026/09/20 - 2026/10/24)
+    val customRangesOctEarly = mapOf("Octubre 2026" to "2026/09/20 - 2026/10/24")
+    // 22 de septiembre normalmente es Septiembre, pero al iniciar Octubre el 20 pertenece a Octubre
+    assertEquals("Octubre 2026", repo.calculateBillingPeriod("2026/09/22", 24, customRangesOctEarly))
+    assertEquals("Septiembre 2026", repo.calculateBillingPeriod("2026/09/19", 24, customRangesOctEarly))
   }
 }
 

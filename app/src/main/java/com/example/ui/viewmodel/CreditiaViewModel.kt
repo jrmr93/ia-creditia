@@ -907,13 +907,51 @@ class CreditiaViewModel @JvmOverloads constructor(
         _uiState.update { it.copy(lastAppliedLogoPath = null) }
     }
 
+    fun getCardCustomRangesMap(cardId: Long?): Map<String, String> {
+        if (cardId == null) return emptyMap()
+        val prefix = "${cardId}_"
+        val result = mutableMapOf<String, String>()
+        for ((k, v) in prefs.all) {
+            if (k.startsWith("custom_cycle_range_$prefix") && v is String) {
+                result[k.removePrefix("custom_cycle_range_$prefix")] = v
+            }
+        }
+        for ((k, v) in _uiState.value.customCycleRanges) {
+            if (k.startsWith(prefix)) {
+                result[k.removePrefix(prefix)] = v
+            }
+        }
+        return result
+    }
+
+    fun getCardCustomCutDatesMap(cardId: Long?): Map<String, String> {
+        if (cardId == null) return emptyMap()
+        val prefix = "${cardId}_"
+        val result = mutableMapOf<String, String>()
+        for ((k, v) in prefs.all) {
+            if (k.startsWith("custom_cut_date_$prefix") && v is String) {
+                result[k.removePrefix("custom_cut_date_$prefix")] = v
+            }
+        }
+        for ((k, v) in _uiState.value.customCutDates) {
+            if (k.startsWith(prefix)) {
+                result[k.removePrefix(prefix)] = v
+            }
+        }
+        return result
+    }
+
+    fun getBillingPeriodForDate(cardId: Long?, dateString: String, cutDay: Int): String {
+        val customRanges = getCardCustomRangesMap(cardId)
+        val customCutDates = getCardCustomCutDatesMap(cardId)
+        return repository.calculateBillingPeriod(dateString, cutDay, customRanges, customCutDates)
+    }
+
     fun getBillingCycleRange(cardId: Long?, periodName: String, cutDay: Int): String {
         if (cardId != null && periodName.isNotBlank() && periodName != "Todos los históricos") {
-            val key = "${cardId}_${periodName}"
-            val custom = _uiState.value.customCycleRanges[key] ?: prefs.getString("custom_cycle_range_$key", null)
-            if (!custom.isNullOrBlank()) {
-                return custom
-            }
+            val customRanges = getCardCustomRangesMap(cardId)
+            val customCutDates = getCardCustomCutDatesMap(cardId)
+            return repository.getBillingCycleRange(periodName, cutDay, customRanges, customCutDates)
         }
         return repository.getBillingCycleRange(periodName, cutDay)
     }
@@ -922,6 +960,25 @@ class CreditiaViewModel @JvmOverloads constructor(
         if (cardId == null || periodName.isBlank() || periodName == "Todos los históricos") return null
         val key = "${cardId}_${periodName}"
         return _uiState.value.customCycleRanges[key] ?: prefs.getString("custom_cycle_range_$key", null)
+    }
+
+    fun recheckExpensesPeriodsForCard(cardId: Long) {
+        viewModelScope.launch {
+            try {
+                val card = _uiState.value.cards.find { it.id == cardId } ?: return@launch
+                val cardExpenses = repository.getAllExpensesList().filter { it.cardId == cardId }
+                val toUpdate = mutableListOf<ExpenseEntity>()
+                for (exp in cardExpenses) {
+                    val correctPeriod = getBillingPeriodForDate(cardId, exp.dateString, card.cutDay)
+                    if (!exp.billingPeriod.equals(correctPeriod, ignoreCase = true)) {
+                        toUpdate.add(exp.copy(billingPeriod = correctPeriod))
+                    }
+                }
+                if (toUpdate.isNotEmpty()) {
+                    repository.updateExpenses(toUpdate)
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     fun setCustomBillingCycleRange(cardId: Long, periodName: String, customRange: String?) {
@@ -945,6 +1002,7 @@ class CreditiaViewModel @JvmOverloads constructor(
             }
             showToast("✓ Rango de facturación sobrescrito para $periodName")
         }
+        recheckExpensesPeriodsForCard(cardId)
     }
 
     fun getCustomCutDate(cardId: Long?, periodName: String): String? {
@@ -974,6 +1032,7 @@ class CreditiaViewModel @JvmOverloads constructor(
             }
             showToast("✓ Fecha de corte sobrescrita para $periodName")
         }
+        recheckExpensesPeriodsForCard(cardId)
     }
 
     fun getCustomPaymentLimitDate(cardId: Long?, periodName: String): String? {
@@ -1493,7 +1552,7 @@ class CreditiaViewModel @JvmOverloads constructor(
         viewModelScope.launch {
             val card = _uiState.value.cards.find { it.id == cardId } ?: _uiState.value.selectedCard
             val cutDay = card?.cutDay ?: 24
-            val billingPeriod = repository.calculateBillingPeriod(dateString, cutDay)
+            val billingPeriod = getBillingPeriodForDate(cardId, dateString, cutDay)
 
             val defaultEst = if (transactionType == ExpenseEntity.TYPE_PAYMENT) "Pago a Tarjeta" else "Consumo General"
             val defaultDesc = if (transactionType == ExpenseEntity.TYPE_PAYMENT) "Pago a la tarjeta" else "Sin descripción"
@@ -1543,7 +1602,11 @@ class CreditiaViewModel @JvmOverloads constructor(
                     transactionGroupName = existing?.transactionGroupName,
                     timestamp = existing?.timestamp ?: System.currentTimeMillis()
                 )
-                val countUpdated = repository.updateExpenseWithDeferredSync(updated, cutDay)
+                val countUpdated = repository.updateExpenseWithDeferredSync(
+                    updated,
+                    cutDay,
+                    periodResolver = { dStr -> getBillingPeriodForDate(cardId, dStr, cutDay) }
+                )
                 if (countUpdated > 1) {
                     showToast("✓ Se reorganizaron las $countUpdated cuotas del diferido (Nota de crédito conservada)")
                 } else {
@@ -1576,7 +1639,14 @@ class CreditiaViewModel @JvmOverloads constructor(
                     showToast("¡Consumo N° $nextSeq Registrado!")
                 }
             }
-            _uiState.update { it.copy(editingExpense = null) }
+            prefs.edit().putString("selected_period", billingPeriod).apply()
+            _uiState.update {
+                it.copy(
+                    editingExpense = null,
+                    selectedPeriod = billingPeriod,
+                    selectedExactDate = null
+                )
+            }
         }
     }
 
@@ -1625,15 +1695,26 @@ class CreditiaViewModel @JvmOverloads constructor(
             try {
                 val card = _uiState.value.cards.find { it.id == originalExpense.cardId } ?: _uiState.value.selectedCard
                 val cutDay = card?.cutDay ?: 24
+                val effDate = startDateString?.ifBlank { null } ?: originalExpense.dateString
+                val periodResolver: (String) -> String = { dStr -> getBillingPeriodForDate(originalExpense.cardId, dStr, cutDay) }
                 repository.deferExpense(
                     originalExpense = originalExpense,
                     months = months,
                     monthlyInterestRate = monthlyInterestRate,
                     cutDay = cutDay,
-                    startDateString = startDateString
+                    startDateString = startDateString,
+                    periodResolver = periodResolver
                 )
+                val firstPeriod = periodResolver(effDate)
+                prefs.edit().putString("selected_period", firstPeriod).apply()
+                _uiState.update {
+                    it.copy(
+                        editingExpense = null,
+                        selectedPeriod = firstPeriod,
+                        selectedExactDate = null
+                    )
+                }
                 showToast("✓ Consumo diferido a $months meses generado con éxito")
-                _uiState.update { it.copy(editingExpense = null) }
                 onSuccess()
             } catch (e: Exception) {
                 showToast("Error al diferir consumo: ${e.localizedMessage}")
@@ -1668,13 +1749,29 @@ class CreditiaViewModel @JvmOverloads constructor(
                 if (selectedExpenses.isEmpty()) return@launch
                 val card = _uiState.value.cards.find { it.id == selectedExpenses.first().cardId } ?: _uiState.value.selectedCard
                 val cutDay = card?.cutDay ?: 24
+                val cardId = selectedExpenses.first().cardId
+                val effectiveDate = startDateString?.ifBlank { null }
+                    ?: selectedExpenses.maxByOrNull { it.dateString }?.dateString
+                    ?: "2026/10/01"
+                val periodResolver: (String) -> String = { dStr -> getBillingPeriodForDate(cardId, dStr, cutDay) }
                 repository.deferMultipleExpenses(
                     selectedExpenses = selectedExpenses,
                     months = months,
                     monthlyInterestRate = monthlyInterestRate,
                     cutDay = cutDay,
-                    startDateString = startDateString
+                    startDateString = startDateString,
+                    periodResolver = periodResolver
                 )
+                val firstPeriod = periodResolver(effectiveDate)
+                prefs.edit().putString("selected_period", firstPeriod).apply()
+                _uiState.update {
+                    it.copy(
+                        selectedExpenseIds = emptySet(),
+                        isSelectionMode = false,
+                        selectedPeriod = firstPeriod,
+                        selectedExactDate = null
+                    )
+                }
                 showToast("✓ ${selectedExpenses.size} consumos consolidados en $months cuotas con éxito")
                 onSuccess()
             } catch (e: Exception) {
@@ -1724,10 +1821,19 @@ class CreditiaViewModel @JvmOverloads constructor(
                     monthlyInterestRate = monthlyInterestRate,
                     receiptUri = receiptUri,
                     cutDay = cutDay,
-                    establishmentLogoUrl = effectiveLogo
+                    establishmentLogoUrl = effectiveLogo,
+                    periodResolver = { dStr -> getBillingPeriodForDate(cardId, dStr, cutDay) }
                 )
+                val firstPeriod = getBillingPeriodForDate(cardId, startDateString, cutDay)
+                prefs.edit().putString("selected_period", firstPeriod).apply()
+                _uiState.update {
+                    it.copy(
+                        editingExpense = null,
+                        selectedPeriod = firstPeriod,
+                        selectedExactDate = null
+                    )
+                }
                 showToast("✓ Se registraron directamente las $months cuotas diferidas")
-                _uiState.update { it.copy(editingExpense = null) }
                 onSuccess?.invoke()
             } catch (e: Exception) {
                 showToast("Error al registrar diferido directo: ${e.localizedMessage}")
@@ -1987,7 +2093,7 @@ class CreditiaViewModel @JvmOverloads constructor(
         val currentMonth = cal.get(Calendar.MONTH) + 1
         val currentDay = cal.get(Calendar.DAY_OF_MONTH)
         val todayStr = String.format(Locale.US, "%04d/%02d/%02d", currentYear, currentMonth, currentDay)
-        return repository.calculateBillingPeriod(todayStr, cutDay)
+        return getBillingPeriodForDate(card?.id, todayStr, cutDay)
     }
 
     /**
