@@ -57,6 +57,7 @@ object BackupUtil {
             // 1. Exportar configuración completa de la aplicación (SharedPreferences seguras y fechas personalizadas)
             val prefs = context.getSharedPreferences("creditia_secure_prefs", Context.MODE_PRIVATE)
             val prefsObj = JSONObject()
+            val customDatesObj = JSONObject()
             for ((key, value) in prefs.all) {
                 when (value) {
                     is Boolean -> prefsObj.put(key, value)
@@ -64,11 +65,21 @@ object BackupUtil {
                     is Long -> prefsObj.put(key, value)
                     is Float -> prefsObj.put(key, value.toDouble())
                     is Double -> prefsObj.put(key, value)
-                    is String -> prefsObj.put(key, value)
+                    is String -> {
+                        prefsObj.put(key, value)
+                        if (key.startsWith("custom_cycle_range_") || key.startsWith("custom_cut_date_") || key.startsWith("custom_payment_limit_")) {
+                            customDatesObj.put(key, value)
+                        }
+                    }
                     else -> if (value != null) prefsObj.put(key, value.toString())
                 }
             }
             root.put("preferences", prefsObj)
+            root.put("custom_dates", customDatesObj)
+            val selCardId = prefs.getLong("selected_card_id", -1L)
+            if (selCardId > 0) root.put("selected_card_id", selCardId)
+            val selPeriod = prefs.getString("selected_period", "") ?: ""
+            if (selPeriod.isNotBlank()) root.put("selected_period", selPeriod)
 
             // 2. Exportar catálogo de logotipos recordados
             val logoPrefs = context.getSharedPreferences("creditia_establishment_logos", Context.MODE_PRIVATE)
@@ -453,6 +464,22 @@ object BackupUtil {
                 val key = keys.next()
                 parsedPreferences[key] = prefsObj.get(key)
             }
+        }
+
+        val customDatesObj = root.optJSONObject("custom_dates")
+        if (customDatesObj != null) {
+            val cdKeys = customDatesObj.keys()
+            while (cdKeys.hasNext()) {
+                val k = cdKeys.next()
+                parsedPreferences[k] = customDatesObj.optString(k)
+            }
+        }
+
+        if (root.has("selected_card_id")) {
+            parsedPreferences["selected_card_id"] = root.optLong("selected_card_id")
+        }
+        if (root.has("selected_period")) {
+            parsedPreferences["selected_period"] = root.optString("selected_period")
         }
 
         val rememberedLogosObj = root.optJSONObject("remembered_logos")

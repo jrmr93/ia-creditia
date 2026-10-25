@@ -641,6 +641,57 @@ class ExampleRobolectricTest {
       db.close()
     }
   }
+  @Test
+  fun testCustomCycleDatesRestoredCorrectlyAfterBackupAndRestore() = kotlinx.coroutines.runBlocking {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val db = Room.inMemoryDatabaseBuilder(app, AppDatabase::class.java).allowMainThreadQueries().build()
+    AppDatabase.populateInitialData(db)
+    val repo = CreditiaRepository(db.creditCardDao(), db.expenseDao())
+    val vm = CreditiaViewModel(app, repo)
+
+    // El usuario selecciona Octubre 2026 y modifica manualmente las fechas en la Tarjeta 1
+    vm.selectPeriod("Octubre 2026")
+    vm.setCustomBillingCycleRange(1, "Octubre 2026", "2026/09/20 - 2026/10/22")
+    vm.setCustomCutDate(1, "Octubre 2026", "Jue 22/10/2026")
+    vm.setCustomPaymentLimitDate(1, "Octubre 2026", "Lun 09/11/2026")
+
+    // Exportar respaldo completo
+    val out = java.io.ByteArrayOutputStream()
+    vm.exportFullBackup(out)
+
+    // Restaurar respaldo completo
+    val inStream = java.io.ByteArrayInputStream(out.toByteArray())
+    vm.restoreFullBackup(inStream)
+
+    val currentCard = vm.uiState.value.selectedCard
+    val currentPeriod = vm.uiState.value.selectedPeriod
+
+    org.junit.Assert.assertEquals("El periodo seleccionado debe restaurarse a Octubre 2026", "Octubre 2026", currentPeriod)
+    org.junit.Assert.assertEquals("La tarjeta seleccionada debe restaurarse a la Tarjeta 1", 1L, currentCard?.id)
+
+    // Validar que las fechas modificadas manualmente NO se hayan cambiado a las por defecto
+    org.junit.Assert.assertEquals(
+      "El rango de facturación modificado debe restaurarse exactamente",
+      "2026/09/20 - 2026/10/22",
+      vm.getBillingCycleRange(currentCard?.id, currentPeriod, currentCard?.cutDay ?: 24)
+    )
+    org.junit.Assert.assertEquals(
+      "La fecha de corte modificada debe restaurarse exactamente",
+      "Jue 22/10/2026",
+      vm.getEffectiveCutDateForPeriod(currentCard, currentPeriod)
+    )
+    org.junit.Assert.assertEquals(
+      "La fecha máxima de pago modificada debe restaurarse exactamente",
+      "Lun 09/11/2026",
+      vm.getEffectivePaymentLimitDateForPeriod(currentCard, currentPeriod)
+    )
+
+    // Validar que el periodo personalizado esté presente en los periodos disponibles
+    val available = vm.getAvailablePeriods(currentCard, repo.getAllExpensesList())
+    org.junit.Assert.assertTrue("Octubre 2026 debe estar disponible en la lista de periodos", available.contains("Octubre 2026"))
+
+    db.close()
+  }
 }
 
 
