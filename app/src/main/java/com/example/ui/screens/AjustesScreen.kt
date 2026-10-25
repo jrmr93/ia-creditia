@@ -146,7 +146,7 @@ fun AjustesScreen(
                         viewModel.exportFullBackup(outputStream)
                     }
                     withContext(Dispatchers.Main) {
-                        viewModel.showToast("✓ Respaldo completo guardado exitosamente (tarjetas, consumos, configuración y fotos)")
+                        viewModel.showToast("✓ Respaldo completo guardado exitosamente (tarjetas, consumos, configuración, comprobantes y logos)")
                     }
                 } catch (e: Exception) {
                     withContext(Dispatchers.Main) {
@@ -1642,13 +1642,13 @@ fun AjustesScreen(
                                         )
                                         Column {
                                             Text(
-                                                text = "Exportar Respaldo Completo (ZIP con Fotos)",
+                                                text = "Exportar Respaldo Local Completo (ZIP)",
                                                 fontSize = 13.sp,
                                                 fontWeight = FontWeight.SemiBold,
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Guarda tarjetas, consumos, configuración y fotos en un paquete comprimido seguro",
+                                                text = "Guarda absolutamente toda la información: tarjetas, consumos, comprobantes, fotos de logos, fechas y configuración",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -1700,7 +1700,7 @@ fun AjustesScreen(
                                                 color = MaterialTheme.colorScheme.onSurface
                                             )
                                             Text(
-                                                text = "Restaura tu base de datos completa con configuración, fotos y cuotas diferidas",
+                                                text = "Restaura absolutamente toda la información: tarjetas, consumos, comprobantes, fotos de logos, fechas y configuración",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -1750,7 +1750,7 @@ fun AjustesScreen(
                                                 color = CreditiaError
                                             )
                                             Text(
-                                                text = "Purga absoluta de tarjetas, consumos, cuotas diferidas y fotos locales",
+                                                text = "Purga absoluta de tarjetas, consumos, comprobantes, fotos de logos, fechas y toda la información",
                                                 fontSize = 11.sp,
                                                 color = CreditiaOnErrorContainer.copy(alpha = 0.8f)
                                             )
@@ -1761,224 +1761,6 @@ fun AjustesScreen(
                                         contentDescription = null,
                                         tint = CreditiaError,
                                         modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // SECTION 3: Reglas de Negocio Contables
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Rule,
-                                contentDescription = null,
-                                tint = CreditiaPrimary,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Text(
-                                text = "Reglas de Negocio Contables",
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                        Text(
-                            text = "Norma financiera",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Card(
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(containerColor = CreditiaSurfaceContainerLowest),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            // Rule 1: Secuencia Continua Obligatoria
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(CreditiaSurfaceContainer),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.FormatListNumbered,
-                                        contentDescription = null,
-                                        tint = CreditiaPrimary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = "Secuencia Continua Obligatoria",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(100.dp))
-                                                .background(CreditiaSurfaceContainer)
-                                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                text = "1, 2, 3, 4...",
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = CreditiaTertiary
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        text = "Los asientos de cuotas y consumos validan índices estrictos sin vacíos de auditoría.",
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-
-                            HorizontalDivider(color = CreditiaSurfaceContainerHigh)
-
-                            // Rule 2: Estándar de Fechas
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(CreditiaSurfaceContainer),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.CalendarToday,
-                                        contentDescription = null,
-                                        tint = CreditiaPrimary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = "Estándar de Fechas",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(100.dp))
-                                                .background(CreditiaSurfaceContainer)
-                                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                text = "YYYY/MM/DD",
-                                                fontSize = 10.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                fontWeight = FontWeight.Bold,
-                                                color = CreditiaPrimary
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        text = "Consistencia ISO local para cortes de facturación y proyección de vencimientos.",
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-
-                            HorizontalDivider(color = CreditiaSurfaceContainerHigh)
-
-                            // Rule 3: Formato Monetario Fijo
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(CreditiaSurfaceContainer),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.AttachMoney,
-                                        contentDescription = null,
-                                        tint = CreditiaPrimary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = "Formato Monetario Fijo",
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.onSurface
-                                        )
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(100.dp))
-                                                .background(CreditiaSurfaceContainer)
-                                                .padding(horizontal = 8.dp, vertical = 2.dp)
-                                        ) {
-                                            Text(
-                                                text = "0.00",
-                                                fontSize = 11.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                fontWeight = FontWeight.Bold,
-                                                color = CreditiaPrimary
-                                            )
-                                        }
-                                    }
-                                    Text(
-                                        text = "Aritmética de punto fijo con truncamiento exacto a dos cifras decimales.",
-                                        fontSize = 12.sp,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
@@ -2153,7 +1935,7 @@ fun AjustesScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(
-                        text = "Se eliminará absolutamente todo: todas las tarjetas de crédito configuradas y todos los registros contables locales en SQLite. Esta acción no se puede deshacer.",
+                        text = "Se eliminará absolutamente toda la información: todas las tarjetas de crédito, todos los consumos, cuotas diferidas, fotos de comprobantes, fotos de logos de establecimientos y fechas personalizadas de corte y pago. Esta acción no se puede deshacer.",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

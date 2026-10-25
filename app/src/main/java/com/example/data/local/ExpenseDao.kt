@@ -14,6 +14,9 @@ interface ExpenseDao {
     @Query("SELECT * FROM expenses ORDER BY sequenceNumber ASC")
     fun getAllExpenses(): Flow<List<ExpenseEntity>>
 
+    @Query("SELECT * FROM expenses ORDER BY sequenceNumber ASC")
+    suspend fun getAllExpensesList(): List<ExpenseEntity>
+
     @Query("SELECT * FROM expenses WHERE cardId = :cardId ORDER BY sequenceNumber ASC")
     fun getExpensesByCard(cardId: Long): Flow<List<ExpenseEntity>>
 
@@ -58,4 +61,22 @@ interface ExpenseDao {
 
     @Query("SELECT * FROM expenses WHERE cardId = :cardId AND establishment = :establishment AND description LIKE :descriptionPattern")
     suspend fun findSimilarDeferredExpenses(cardId: Long, establishment: String, descriptionPattern: String): List<ExpenseEntity>
+
+    @Query("SELECT * FROM expenses WHERE transactionGroupId = :groupId")
+    suspend fun getExpensesByTransactionGroupId(groupId: String): List<ExpenseEntity>
+
+    @Query("UPDATE expenses SET transactionGroupId = :groupId, transactionGroupName = :groupName WHERE id IN (:expenseIds)")
+    suspend fun updateTransactionGroup(expenseIds: List<Long>, groupId: String?, groupName: String?)
+
+    @Query("UPDATE expenses SET transactionGroupId = NULL, transactionGroupName = NULL WHERE transactionGroupId = :groupId")
+    suspend fun clearTransactionGroup(groupId: String)
+
+    @Update
+    suspend fun updateExpenses(expenses: List<ExpenseEntity>)
+
+    @Query("UPDATE expenses SET establishmentLogoUrl = :logoUrl WHERE deferredGroupId = :groupId")
+    suspend fun updateLogoByDeferredGroupId(groupId: String, logoUrl: String?): Int
+
+    @Query("UPDATE expenses SET establishmentLogoUrl = :logoUrl WHERE LOWER(establishment) = LOWER(:establishment)")
+    suspend fun updateLogoByEstablishment(establishment: String, logoUrl: String?): Int
 }

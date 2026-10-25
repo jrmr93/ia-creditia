@@ -22,9 +22,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import android.app.DatePickerDialog
+import androidx.compose.ui.platform.LocalContext
+import java.util.Calendar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.EditCalendar
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Percent
 import androidx.compose.material.icons.filled.Schedule
@@ -79,8 +84,11 @@ fun DiferirConsumoDialog(
     cardName: String,
     repository: CreditiaRepository,
     onDismiss: () -> Unit,
-    onConfirm: (months: Int, monthlyInterestRate: Double) -> Unit
+    onConfirm: (months: Int, monthlyInterestRate: Double, startDateString: String) -> Unit
 ) {
+    val context = LocalContext.current
+    var deferDateString by remember(dateString) { mutableStateOf(dateString) }
+
     val quickMonthOptions = listOf(3, 6, 9, 12, 18, 24, 36)
     var selectedMonths by remember { mutableIntStateOf(3) }
     var isCustomMonths by remember { mutableStateOf(false) }
@@ -98,12 +106,12 @@ fun DiferirConsumoDialog(
 
     val effectiveRate = if (isZeroInterest) 0.0 else (interestRateInput.toDoubleOrNull() ?: 0.0)
 
-    val installmentPlan = remember(amount, effectiveMonths, effectiveRate, dateString, cutDay) {
+    val installmentPlan = remember(amount, effectiveMonths, effectiveRate, deferDateString, cutDay) {
         repository.calculateInstallmentPlan(
             amount = amount,
             months = effectiveMonths,
             monthlyInterestRate = effectiveRate,
-            startDateString = dateString,
+            startDateString = deferDateString,
             cutDay = cutDay
         )
     }
@@ -204,6 +212,111 @@ fun DiferirConsumoDialog(
                             .verticalScroll(rememberScrollState()),
                         verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
+                        // Selector para modificar la fecha de creación del diferido
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = CreditiaSurfaceContainerLow,
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    val cal = Calendar.getInstance()
+                                    try {
+                                        val parts = deferDateString.split("/")
+                                        if (parts.size == 3) {
+                                            cal.set(Calendar.YEAR, parts[0].toInt())
+                                            cal.set(Calendar.MONTH, parts[1].toInt() - 1)
+                                            cal.set(Calendar.DAY_OF_MONTH, parts[2].toInt())
+                                        }
+                                    } catch (_: Exception) {}
+
+                                    DatePickerDialog(
+                                        context,
+                                        { _, y, m, d ->
+                                            deferDateString = String.format(Locale.US, "%04d/%02d/%02d", y, m + 1, d)
+                                        },
+                                        cal.get(Calendar.YEAR),
+                                        cal.get(Calendar.MONTH),
+                                        cal.get(Calendar.DAY_OF_MONTH)
+                                    ).show()
+                                }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 11.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(36.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(CreditiaPrimary.copy(alpha = 0.12f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.CalendarToday,
+                                            contentDescription = "Fecha del diferido",
+                                            tint = CreditiaPrimary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    Column {
+                                        Text(
+                                            text = "Fecha de creación del diferido",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = deferDateString,
+                                            fontSize = 14.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+
+                                IconButton(
+                                    onClick = {
+                                        val cal = Calendar.getInstance()
+                                        try {
+                                            val parts = deferDateString.split("/")
+                                            if (parts.size == 3) {
+                                                cal.set(Calendar.YEAR, parts[0].toInt())
+                                                cal.set(Calendar.MONTH, parts[1].toInt() - 1)
+                                                cal.set(Calendar.DAY_OF_MONTH, parts[2].toInt())
+                                            }
+                                        } catch (_: Exception) {}
+
+                                        DatePickerDialog(
+                                            context,
+                                            { _, y, m, d ->
+                                                deferDateString = String.format(Locale.US, "%04d/%02d/%02d", y, m + 1, d)
+                                            },
+                                            cal.get(Calendar.YEAR),
+                                            cal.get(Calendar.MONTH),
+                                            cal.get(Calendar.DAY_OF_MONTH)
+                                        ).show()
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.EditCalendar,
+                                        contentDescription = "Cambiar fecha",
+                                        tint = CreditiaPrimary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+
                         // Info Box sobre el corte y la primera cuota
                         Surface(
                             shape = RoundedCornerShape(10.dp),
@@ -223,7 +336,7 @@ fun DiferirConsumoDialog(
                                 )
                                 val firstPeriod = installmentPlan.firstOrNull()?.billingPeriod ?: ""
                                 Text(
-                                    text = "Gasto realizado el $dateString. Al cerrar el corte (día $cutDay), la 1ª cuota ingresará en el periodo $firstPeriod.",
+                                    text = "Diferido creado el $deferDateString. Al cerrar el corte (día $cutDay), la 1ª cuota ingresará en el periodo $firstPeriod.",
                                     fontSize = 11.5.sp,
                                     lineHeight = 15.sp,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -592,7 +705,7 @@ fun DiferirConsumoDialog(
 
                         Button(
                             onClick = {
-                                onConfirm(effectiveMonths, effectiveRate)
+                                onConfirm(effectiveMonths, effectiveRate, deferDateString)
                             },
                             modifier = Modifier.weight(1.4f).height(46.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary),
@@ -610,3 +723,25 @@ fun DiferirConsumoDialog(
         }
     }
 }
+
+@Composable
+fun DiferirConsumoDialog(
+    amount: Double,
+    establishment: String,
+    dateString: String,
+    cutDay: Int,
+    cardName: String,
+    repository: CreditiaRepository,
+    onDismiss: () -> Unit,
+    onConfirm: (months: Int, monthlyInterestRate: Double) -> Unit
+) = DiferirConsumoDialog(
+    amount = amount,
+    establishment = establishment,
+    dateString = dateString,
+    cutDay = cutDay,
+    cardName = cardName,
+    repository = repository,
+    onDismiss = onDismiss,
+    onConfirm = { months, rate, _ -> onConfirm(months, rate) }
+)
+

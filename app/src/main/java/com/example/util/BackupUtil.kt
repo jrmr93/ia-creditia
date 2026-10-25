@@ -6,9 +6,7 @@ import com.example.data.model.CreditCardEntity
 import com.example.data.model.ExpenseEntity
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -18,14 +16,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.zip.ZipEntry
-import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 
 data class ParsedBackup(
     val cards: List<CreditCardEntity>,
     val expenses: List<ExpenseEntity>,
     val photosCount: Int,
-    val preferences: Map<String, Any?> = emptyMap()
+    val logosCount: Int = 0,
+    val preferences: Map<String, Any?> = emptyMap(),
+    val rememberedLogos: Map<String, String> = emptyMap()
 )
 
 object BackupUtil {
@@ -33,10 +32,11 @@ object BackupUtil {
     private const val METADATA_ENTRY_NAME = "backup_metadata.json"
     private const val LEGACY_METADATA_NAME = "metadata.json"
     private const val RECEIPTS_DIR_ENTRY = "receipts/"
+    private const val LOGOS_DIR_ENTRY = "logos/"
 
     /**
      * Exporta el respaldo completo (tarjetas, consumos con todos sus datos,
-     * configuración completa de la app y los archivos de fotos de comprobantes)
+     * configuración completa de la app, fotos de comprobantes y fotos de logotipos)
      * en un archivo ZIP estándar.
      */
     fun exportFullBackup(
@@ -54,7 +54,7 @@ object BackupUtil {
             root.put("cards_count", cards.size)
             root.put("expenses_count", expenses.size)
 
-            // Exportar configuración completa de la aplicación (SharedPreferences)
+            // 1. Exportar configuración completa de la aplicación (SharedPreferences seguras y fechas personalizadas)
             val prefs = context.getSharedPreferences("creditia_secure_prefs", Context.MODE_PRIVATE)
             val prefsObj = JSONObject()
             for ((key, value) in prefs.all) {
@@ -70,6 +70,17 @@ object BackupUtil {
             }
             root.put("preferences", prefsObj)
 
+            // 2. Exportar catálogo de logotipos recordados
+            val logoPrefs = context.getSharedPreferences("creditia_establishment_logos", Context.MODE_PRIVATE)
+            val logoPrefsObj = JSONObject()
+            for ((key, value) in logoPrefs.all) {
+                if (value is String && value.isNotBlank()) {
+                    logoPrefsObj.put(key, value)
+                }
+            }
+            root.put("remembered_logos", logoPrefsObj)
+
+            // 3. Exportar tarjetas de crédito
             val cardsArray = JSONArray()
             for (c in cards) {
                 val obj = JSONObject()
@@ -89,7 +100,9 @@ object BackupUtil {
             }
             root.put("cards", cardsArray)
 
+            // 4. Exportar consumos y recolectar archivos a empacar
             val receiptsToPack = mutableSetOf<File>()
+            val logosToPack = mutableSetOf<File>()
             val expensesArray = JSONArray()
 
             for (e in expenses) {
@@ -103,10 +116,14 @@ object BackupUtil {
                 obj.put("dateString", e.dateString)
                 obj.put("billingPeriod", e.billingPeriod)
                 obj.put("deferredGroupId", e.deferredGroupId ?: "")
+                obj.put("transactionType", e.transactionType)
+                obj.put("transactionGroupId", e.transactionGroupId ?: "")
+                obj.put("transactionGroupName", e.transactionGroupName ?: "")
                 obj.put("timestamp", e.timestamp)
 
+                // Recolectar comprobantes
                 val receiptList = e.getReceiptUriList()
-                val relativeNames = receiptList.mapNotNull { uriPath ->
+                val relativeReceiptNames = receiptList.mapNotNull { uriPath ->
                     val cleanPath = uriPath.removePrefix("file://")
                     val file = File(cleanPath)
                     if (file.exists() && file.isFile) {
@@ -120,22 +137,68 @@ object BackupUtil {
                         } else null
                     }
                 }
-                obj.put("receiptFileNames", relativeNames.joinToString("|"))
+                obj.put("receiptFileNames", relativeReceiptNames.joinToString("|"))
+                obj.put("receiptUri", e.receiptUri ?: "")
+
+                // Recolectar logotipos asociados al consumo
+                val logoUrl = e.establishmentLogoUrl ?: ""
+                val relativeLogoNames = if (logoUrl.isNotBlank()) {
+                    logoUrl.split("|").map { it.trim() }.filter { it.isNotBlank() }.map { part ->
+                        if (part.startsWith("http://") || part.startsWith("https://")) {
+                            part
+                        } else {
+                            val cleanPath = part.removePrefix("file://")
+                            val file = File(cleanPath)
+                            if (file.exists() && file.isFile) {
+                                logosToPack.add(file)
+                                file.name
+                            } else {
+                                val fallbackFile = File(LogoStorageUtil.getLogosDir(context), file.name)
+                                if (fallbackFile.exists() && fallbackFile.isFile) {
+                                    logosToPack.add(fallbackFile)
+                                    fallbackFile.name
+                                } else {
+                                    file.name
+                                }
+                            }
+                        }
+                    }.joinToString("|")
+                } else ""
+                obj.put("logoFileNames", relativeLogoNames)
+                obj.put("establishmentLogoUrl", logoUrl)
+
                 expensesArray.put(obj)
             }
             root.put("expenses", expensesArray)
 
-            // Asegurar que todos los comprobantes locales en el directorio de la app se incluyan
+            // Recolectar logos referenciados en remembered_logos
+            for ((_, v) in logoPrefs.all) {
+                if (v is String && v.isNotBlank() && !v.startsWith("http://") && !v.startsWith("https://")) {
+                    val clean = v.removePrefix("file://")
+                    val f = File(clean)
+                    if (f.exists() && f.isFile) {
+                        logosToPack.add(f)
+                    } else {
+                        val fb = File(LogoStorageUtil.getLogosDir(context), f.name)
+                        if (fb.exists() && fb.isFile) logosToPack.add(fb)
+                    }
+                }
+            }
+
+            // Asegurar que todos los comprobantes y logos en los directorios internos de la app se incluyan
             val allDirReceipts = ReceiptStorageUtil.getReceiptsDir(context).listFiles()?.filter { it.isFile } ?: emptyList()
             receiptsToPack.addAll(allDirReceipts)
 
-            // 1. Escribir metadatos JSON
+            val allDirLogos = LogoStorageUtil.getAllLogoFiles(context)
+            logosToPack.addAll(allDirLogos)
+
+            // 5. Escribir metadatos JSON
             zipOut.putNextEntry(ZipEntry(METADATA_ENTRY_NAME))
             val jsonBytes = root.toString(2).toByteArray(Charsets.UTF_8)
             zipOut.write(jsonBytes)
             zipOut.closeEntry()
 
-            // 2. Escribir fotos de comprobantes en receipts/
+            // 6. Escribir fotos de comprobantes en receipts/
             for (receiptFile in receiptsToPack) {
                 try {
                     val entry = ZipEntry(RECEIPTS_DIR_ENTRY + receiptFile.name)
@@ -149,6 +212,20 @@ object BackupUtil {
                 }
             }
 
+            // 7. Escribir fotos de logotipos en logos/
+            for (logoFile in logosToPack) {
+                try {
+                    val entry = ZipEntry(LOGOS_DIR_ENTRY + logoFile.name)
+                    zipOut.putNextEntry(entry)
+                    FileInputStream(logoFile).use { fis ->
+                        fis.copyTo(zipOut)
+                    }
+                    zipOut.closeEntry()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error empacando logo ${logoFile.name}: ${e.message}")
+                }
+            }
+
             zipOut.finish()
             zipOut.flush()
         } finally {
@@ -157,7 +234,7 @@ object BackupUtil {
     }
 
     /**
-     * Parsea y extrae el respaldo, detectando automáticamente si es un ZIP con fotos
+     * Parsea y extrae el respaldo, detectando automáticamente si es un ZIP completo
      * o un archivo JSON convencional de versiones anteriores.
      */
     fun parseBackup(
@@ -204,8 +281,14 @@ object BackupUtil {
         if (!targetReceiptsDir.exists()) {
             targetReceiptsDir.mkdirs()
         }
+        val targetLogosDir = LogoStorageUtil.getLogosDir(context)
+        if (!targetLogosDir.exists()) {
+            targetLogosDir.mkdirs()
+        }
+
         var jsonContent: String? = null
         var photosCount = 0
+        var logosCount = 0
 
         java.util.zip.ZipFile(zipFileOnDisk).use { zip ->
             val entries = zip.entries()
@@ -231,6 +314,17 @@ object BackupUtil {
                         }
                         photosCount++
                     }
+                } else if ((normalizedName.startsWith(LOGOS_DIR_ENTRY) || normalizedName.contains("logos/")) && !entry.isDirectory) {
+                    val fileName = File(normalizedName).name
+                    if (fileName.isNotBlank()) {
+                        val destFile = File(targetLogosDir, fileName)
+                        zip.getInputStream(entry).use { input ->
+                            FileOutputStream(destFile).use { output ->
+                                input.copyTo(output)
+                            }
+                        }
+                        logosCount++
+                    }
                 }
             }
         }
@@ -239,18 +333,24 @@ object BackupUtil {
             throw IllegalArgumentException("El archivo ZIP no contiene el archivo de metadatos válido.")
         }
 
-        return parseJsonMetadata(context, jsonContent, photosCount)
+        return parseJsonMetadata(context, jsonContent, photosCount, logosCount)
     }
 
     private fun parseJsonBackup(context: Context, jsonText: String): ParsedBackup {
-        return parseJsonMetadata(context, jsonText, 0)
+        return parseJsonMetadata(context, jsonText, 0, 0)
     }
 
-    private fun parseJsonMetadata(context: Context, jsonContent: String, extractedPhotosCount: Int): ParsedBackup {
+    private fun parseJsonMetadata(
+        context: Context,
+        jsonContent: String,
+        extractedPhotosCount: Int,
+        extractedLogosCount: Int = 0
+    ): ParsedBackup {
         val root = JSONObject(jsonContent)
         val cardsArray = root.optJSONArray("cards") ?: JSONArray()
         val expensesArray = root.optJSONArray("expenses") ?: JSONArray()
         val receiptsDir = ReceiptStorageUtil.getReceiptsDir(context)
+        val logosDir = LogoStorageUtil.getLogosDir(context)
 
         val parsedCards = mutableListOf<CreditCardEntity>()
         for (i in 0 until cardsArray.length()) {
@@ -279,10 +379,10 @@ object BackupUtil {
             // Reconstruir receiptUri apuntando a las fotos extraídas
             val receiptFileNames = obj.optString("receiptFileNames", "")
             val rawReceiptUri = obj.optString("receiptUri", "")
-            val effectiveNames = if (receiptFileNames.isNotBlank()) receiptFileNames else rawReceiptUri
+            val effectiveReceiptNames = if (receiptFileNames.isNotBlank()) receiptFileNames else rawReceiptUri
 
-            val finalReceiptUri = if (effectiveNames.isNotBlank()) {
-                effectiveNames.split("|")
+            val finalReceiptUri = if (effectiveReceiptNames.isNotBlank()) {
+                effectiveReceiptNames.split("|")
                     .map { it.trim().removePrefix("file://") }
                     .filter { it.isNotBlank() }
                     .map { rawName ->
@@ -293,7 +393,37 @@ object BackupUtil {
                     .ifBlank { null }
             } else null
 
+            // Reconstruir establishmentLogoUrl apuntando a los logos extraídos
+            val logoFileNames = obj.optString("logoFileNames", "")
+            val rawLogoUrl = obj.optString("establishmentLogoUrl", "")
+            val effectiveLogoNames = if (logoFileNames.isNotBlank()) logoFileNames else rawLogoUrl
+
+            val finalLogoUrl = if (effectiveLogoNames.isNotBlank()) {
+                effectiveLogoNames.split("|")
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+                    .map { rawVal ->
+                        if (rawVal.startsWith("http://") || rawVal.startsWith("https://")) {
+                            rawVal
+                        } else {
+                            val cleanName = File(rawVal.removePrefix("file://")).name
+                            val localLogo = File(logosDir, cleanName)
+                            if (localLogo.exists()) {
+                                localLogo.absolutePath
+                            } else {
+                                val origFile = File(rawVal.removePrefix("file://"))
+                                if (origFile.exists()) origFile.absolutePath else localLogo.absolutePath
+                            }
+                        }
+                    }
+                    .joinToString("|")
+                    .ifBlank { null }
+            } else null
+
             val deferredGroupId = obj.optString("deferredGroupId", "").ifBlank { null }
+            val transactionType = obj.optString("transactionType", ExpenseEntity.TYPE_EXPENSE).ifBlank { ExpenseEntity.TYPE_EXPENSE }
+            val transactionGroupId = obj.optString("transactionGroupId", "").ifBlank { null }
+            val transactionGroupName = obj.optString("transactionGroupName", "").ifBlank { null }
 
             val expense = ExpenseEntity(
                 id = obj.optLong("id", 0L),
@@ -306,6 +436,10 @@ object BackupUtil {
                 billingPeriod = obj.optString("billingPeriod", "Octubre 2026"),
                 receiptUri = finalReceiptUri,
                 deferredGroupId = deferredGroupId,
+                transactionType = transactionType,
+                transactionGroupId = transactionGroupId,
+                transactionGroupName = transactionGroupName,
+                establishmentLogoUrl = finalLogoUrl,
                 timestamp = obj.optLong("timestamp", System.currentTimeMillis())
             )
             parsedExpenses.add(expense)
@@ -321,11 +455,32 @@ object BackupUtil {
             }
         }
 
+        val rememberedLogosObj = root.optJSONObject("remembered_logos")
+        val parsedRememberedLogos = mutableMapOf<String, String>()
+        if (rememberedLogosObj != null) {
+            val keys = rememberedLogosObj.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val rawVal = rememberedLogosObj.optString(key, "")
+                if (rawVal.isNotBlank()) {
+                    if (rawVal.startsWith("http://") || rawVal.startsWith("https://")) {
+                        parsedRememberedLogos[key] = rawVal
+                    } else {
+                        val fileName = File(rawVal.removePrefix("file://")).name
+                        val localLogo = File(logosDir, fileName)
+                        parsedRememberedLogos[key] = if (localLogo.exists()) localLogo.absolutePath else localLogo.absolutePath
+                    }
+                }
+            }
+        }
+
         return ParsedBackup(
             cards = parsedCards,
             expenses = parsedExpenses,
             photosCount = extractedPhotosCount,
-            preferences = parsedPreferences
+            logosCount = extractedLogosCount,
+            preferences = parsedPreferences,
+            rememberedLogos = parsedRememberedLogos
         )
     }
 }

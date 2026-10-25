@@ -57,6 +57,25 @@ class MainActivity : ComponentActivity() {
         windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
         windowInsetsController.show(WindowInsetsCompat.Type.statusBars())
         windowInsetsController.isAppearanceLightStatusBars = true
+        val imageLoader = coil.ImageLoader.Builder(this)
+            .components {
+                add(coil.decode.SvgDecoder.Factory())
+            }
+            .okHttpClient {
+                okhttp3.OkHttpClient.Builder()
+                    .addInterceptor { chain ->
+                        val original = chain.request()
+                        val request = original.newBuilder()
+                            .header("User-Agent", "CreditiaApp/1.0 (Android; Linux) AppleWebKit/537.36")
+                            .build()
+                        chain.proceed(request)
+                    }
+                    .build()
+            }
+            .crossfade(true)
+            .build()
+        coil.Coil.setImageLoader(imageLoader)
+
         setContent {
             CreditiaTheme {
                 CreditiaApp()
@@ -79,11 +98,18 @@ fun CreditiaApp(viewModel: CreditiaViewModel = viewModel()) {
     }
 
     val currentTitle = when {
-        isAddingNewExpense -> if (uiState.editingExpense != null) "Editar Consumo" else "Nuevo Consumo"
-        uiState.currentTab == "consumos" -> "Consumos"
+        isAddingNewExpense -> {
+            val editing = uiState.editingExpense
+            if (editing != null) {
+                if (editing.isPayment()) "Editar Pago a Tarjeta" else "Editar Consumo"
+            } else {
+                "Nuevo Consumo / Pago"
+            }
+        }
+        uiState.currentTab == "consumos" -> "Consumos y Pagos"
         uiState.currentTab == "tarjetas" -> "Tarjetas"
         uiState.currentTab == "ajustes" -> "Ajustes"
-        else -> "Consumos"
+        else -> "Consumos y Pagos"
     }
 
     val isLocked = uiState.isFirstLaunch || !uiState.isVaultUnlocked
