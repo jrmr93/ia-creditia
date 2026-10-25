@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import android.app.DatePickerDialog
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material.icons.filled.AddCard
@@ -68,6 +69,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventRepeat
@@ -225,10 +227,13 @@ fun ConsumosScreen(
     val selectedExpenseIds = uiState.selectedExpenseIds
     val isSelectionMode = uiState.isSelectionMode
     var showMultiDeferDialog by remember { mutableStateOf(false) }
-    var showGroupDialog by remember { mutableStateOf(false) }
-    var groupNameInput by remember { mutableStateOf("") }
     var showEditCycleRangeDialog by remember { mutableStateOf(false) }
     var targetPeriodToEdit by remember { mutableStateOf<String?>(null) }
+
+    // Interceptar botón atrás del sistema para cancelar el modo de selección sin salir de la app
+    BackHandler(enabled = isSelectionMode) {
+        viewModel.clearExpenseSelection()
+    }
 
     val expenseListItems = remember(filteredExpenses) {
         val result = mutableListOf<ExpenseListItem>()
@@ -556,13 +561,7 @@ fun ConsumosScreen(
                                 }
 
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .clickable(enabled = selectedPeriod != "Todos los históricos") {
-                                            targetPeriodToEdit = selectedPeriod
-                                            showEditCycleRangeDialog = true
-                                        },
+                                    modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -799,37 +798,18 @@ fun ConsumosScreen(
                                                 }
                                             }
                                         }
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .let {
-                                                    if (selectedPeriod != "Todos los históricos" && uiState.selectedExactDate.isNullOrBlank()) {
-                                                        it.clickable {
-                                                            targetPeriodToEdit = selectedPeriod
-                                                            showEditCycleRangeDialog = true
-                                                        }
-                                                    } else it
-                                                }
-                                        ) {
+                                        if (!uiState.selectedExactDate.isNullOrBlank()) {
                                             Text(
-                                                text = if (uiState.selectedExactDate.isNullOrBlank()) {
-                                                    if (selectedPeriod == "Todos los históricos") "Historial completo de consumos" else "Ciclo: $cycleRange"
-                                                } else {
-                                                    "Filtro por día específico"
-                                                },
+                                                text = "Filtro por día específico",
                                                 fontSize = 12.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
-                                            if (selectedPeriod != "Todos los históricos" && uiState.selectedExactDate.isNullOrBlank()) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Edit,
-                                                    contentDescription = "Editar rango de facturación",
-                                                    tint = CreditiaPrimary,
-                                                    modifier = Modifier.size(13.dp)
-                                                )
-                                            }
+                                        } else if (selectedPeriod == "Todos los históricos") {
+                                            Text(
+                                                text = "Historial completo de consumos",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
                                     }
                                 }
@@ -1386,10 +1366,12 @@ fun ConsumosScreen(
                             is ExpenseListItem.Single -> {
                                 val expense = item.expense
                                 val isSelected = expense.id in selectedExpenseIds
+                                val isLocked = expense.isLockedByActiveDeferred(allExpenses)
                                 ExpenseCardItem(
                                     expense = expense,
                                     isSelected = isSelected,
                                     isSelectionMode = isSelectionMode,
+                                    isLocked = isLocked,
                                     onToggleSelect = {
                                         viewModel.toggleExpenseSelection(expense.id)
                                     },
@@ -1397,11 +1379,25 @@ fun ConsumosScreen(
                                         viewModel.toggleExpenseSelection(expense.id)
                                     },
                                     onEdit = {
-                                        viewModel.startEditExpense(expense)
-                                        onNavigateToNewExpense()
+                                        if (isLocked) {
+                                            viewModel.showToast(
+                                                if (expense.isCreditNote()) "Las notas de crédito creadas por un diferido no se pueden modificar"
+                                                else "Registro bloqueado: no se puede editar porque pertenece a un diferido activo"
+                                            )
+                                        } else {
+                                            viewModel.startEditExpense(expense)
+                                            onNavigateToNewExpense()
+                                        }
                                     },
                                     onDelete = {
-                                        viewModel.promptDeleteExpense(expense)
+                                        if (isLocked) {
+                                            viewModel.showToast(
+                                                if (expense.isCreditNote()) "Las notas de crédito creadas por un diferido no se pueden eliminar"
+                                                else "Registro bloqueado: no se puede eliminar porque tiene cuotas diferidas activas"
+                                            )
+                                        } else {
+                                            viewModel.promptDeleteExpense(expense)
+                                        }
                                     },
                                     onReceiptClick = { uri, title, subtitle ->
                                         viewingReceiptUri = uri
@@ -1424,11 +1420,27 @@ fun ConsumosScreen(
                                         viewModel.toggleExpenseSelection(expenseId)
                                     },
                                     onEdit = { expense ->
-                                        viewModel.startEditExpense(expense)
-                                        onNavigateToNewExpense()
+                                        val isChildLocked = expense.isLockedByActiveDeferred(allExpenses)
+                                        if (isChildLocked) {
+                                            viewModel.showToast(
+                                                if (expense.isCreditNote()) "Las notas de crédito creadas por un diferido no se pueden modificar"
+                                                else "Registro bloqueado: no se puede editar porque pertenece a un diferido activo"
+                                            )
+                                        } else {
+                                            viewModel.startEditExpense(expense)
+                                            onNavigateToNewExpense()
+                                        }
                                     },
                                     onDelete = { expense ->
-                                        viewModel.promptDeleteExpense(expense)
+                                        val isChildLocked = expense.isLockedByActiveDeferred(allExpenses)
+                                        if (isChildLocked) {
+                                            viewModel.showToast(
+                                                if (expense.isCreditNote()) "Las notas de crédito creadas por un diferido no se pueden eliminar"
+                                                else "Registro bloqueado: no se puede eliminar porque tiene cuotas diferidas activas"
+                                            )
+                                        } else {
+                                            viewModel.promptDeleteExpense(expense)
+                                        }
                                     },
                                     onReceiptClick = { uri, title, subtitle ->
                                         viewingReceiptUri = uri
@@ -1534,8 +1546,7 @@ fun ConsumosScreen(
                     if (selectedExpenseIds.size >= 2) {
                         Button(
                             onClick = {
-                                groupNameInput = ""
-                                showGroupDialog = true
+                                viewModel.groupSelectedExpenses()
                             },
                             modifier = Modifier
                                 .weight(1f)
@@ -1615,80 +1626,16 @@ fun ConsumosScreen(
             cardName = card?.cardName ?: "Tarjeta",
             repository = viewModel.repository,
             onDismiss = { showMultiDeferDialog = false },
-            onConfirm = { months, monthlyInterestRate ->
+            onConfirm = { months, monthlyInterestRate, customStartDate ->
                 showMultiDeferDialog = false
-                viewModel.deferMultipleExpenses(selectedExpenses, months, monthlyInterestRate) {
+                viewModel.deferMultipleExpenses(selectedExpenses, months, monthlyInterestRate, customStartDate) {
                     viewModel.clearExpenseSelection()
                 }
             }
         )
     }
 
-    // Modal para agrupar consumos en una sola transacción
-    if (showGroupDialog && selectedExpenseIds.isNotEmpty()) {
-        AlertDialog(
-            onDismissRequest = { showGroupDialog = false },
-            icon = {
-                Box(
-                    modifier = Modifier
-                        .size(44.dp)
-                        .clip(CircleShape)
-                        .background(CreditiaPrimary.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Layers,
-                        contentDescription = null,
-                        tint = CreditiaPrimary,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            },
-            title = {
-                Text(
-                    text = "Agrupar en Transacción",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 18.sp
-                )
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Agrupa los ${selectedExpenseIds.size} consumos seleccionados en un nuevo panel para apreciar que forman parte de una sola transacción.",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedTextField(
-                        value = groupNameInput,
-                        onValueChange = { groupNameInput = it },
-                        label = { Text("Nombre de la transacción (opcional)") },
-                        placeholder = { Text("Ej. Salida Familiar, Compras Supermercado") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(10.dp)
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val name = groupNameInput.trim().ifBlank { null }
-                        showGroupDialog = false
-                        viewModel.groupSelectedExpenses(name)
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Agrupar", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showGroupDialog = false }) {
-                    Text("Cancelar", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        )
-    }
+
 
     // Modal de confirmación de eliminación
     if (uiState.expenseToDelete != null) {
@@ -1928,14 +1875,6 @@ fun ConsumosScreen(
                     items(availablePeriods) { period ->
                         val isSelected = (selectedPeriod == period) && uiState.selectedExactDate.isNullOrBlank()
                         val isCurrent = period == currentActivePeriod
-                        val periodDates = if (period == "Todos los históricos") {
-                            "Historial consolidado de todas las compras"
-                        } else {
-                            selectedCard?.let {
-                                viewModel.getBillingCycleRange(it.id, period, it.cutDay)
-                            } ?: ""
-                        }
-                        val isOverridden = selectedCard?.let { viewModel.getCustomBillingCycleRange(it.id, period) != null } ?: false
 
                         Card(
                             shape = RoundedCornerShape(12.dp),
@@ -2010,50 +1949,12 @@ fun ConsumosScreen(
                                                 }
                                             }
                                         }
-                                        if (periodDates.isNotBlank()) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                                modifier = Modifier
-                                                    .clip(RoundedCornerShape(4.dp))
-                                                    .let {
-                                                        if (period != "Todos los históricos") {
-                                                            it.clickable {
-                                                                targetPeriodToEdit = period
-                                                                showEditCycleRangeDialog = true
-                                                            }
-                                                        } else it
-                                                    }
-                                            ) {
-                                                Text(
-                                                    text = periodDates,
-                                                    fontSize = 11.sp,
-                                                    color = if (isOverridden) CreditiaPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    fontWeight = if (isOverridden) FontWeight.SemiBold else FontWeight.Normal
-                                                )
-                                                if (period != "Todos los históricos") {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Edit,
-                                                        contentDescription = "Editar fecha de facturación",
-                                                        tint = if (isOverridden) CreditiaPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                                        modifier = Modifier.size(12.dp)
-                                                    )
-                                                    if (isOverridden) {
-                                                        Surface(
-                                                            shape = RoundedCornerShape(3.dp),
-                                                            color = CreditiaPrimary.copy(alpha = 0.12f)
-                                                        ) {
-                                                            Text(
-                                                                text = "Editado",
-                                                                fontSize = 8.5.sp,
-                                                                fontWeight = FontWeight.Bold,
-                                                                color = CreditiaPrimary,
-                                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                                            )
-                                                        }
-                                                    }
-                                                }
-                                            }
+                                        if (period == "Todos los históricos") {
+                                            Text(
+                                                text = "Historial consolidado de todas las compras",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
                                     }
                                 }
@@ -2160,6 +2061,7 @@ fun ExpenseCardItem(
     expense: ExpenseEntity,
     isSelected: Boolean = false,
     isSelectionMode: Boolean = false,
+    isLocked: Boolean = false,
     onToggleSelect: () -> Unit = {},
     onLongPress: (() -> Unit)? = null,
     onEdit: () -> Unit,
@@ -2242,33 +2144,66 @@ fun ExpenseCardItem(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = accentColor.copy(alpha = 0.14f)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = accentColor.copy(alpha = 0.14f)
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(6.dp)
-                                    .clip(CircleShape)
-                                    .background(accentColor)
-                            )
-                            Text(
-                                text = when {
-                                    isPayment -> "PAGO A TARJETA"
-                                    isCreditNote -> "NOTA DE CRÉDITO"
-                                    isDeferred -> "CUOTA DIFERIDA"
-                                    else -> "CONSUMO"
-                                },
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = accentColor,
-                                letterSpacing = 0.5.sp
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(accentColor)
+                                )
+                                Text(
+                                    text = when {
+                                        isPayment -> "PAGO A TARJETA"
+                                        isCreditNote -> "NOTA DE CRÉDITO"
+                                        isDeferred -> "CUOTA DIFERIDA"
+                                        else -> "CONSUMO"
+                                    },
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = accentColor,
+                                    letterSpacing = 0.5.sp
+                                )
+                            }
+                        }
+
+                        if (isLocked) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f))
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Lock,
+                                        contentDescription = "Bloqueado",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(10.dp)
+                                    )
+                                    Text(
+                                        text = "BLOQUEADO",
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.error,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -2296,15 +2231,22 @@ fun ExpenseCardItem(
                             modifier = Modifier
                                 .size(24.dp)
                                 .clip(CircleShape)
-                                .background(if (isSelected) CreditiaPrimary else Color.Transparent)
+                                .background(if (isLocked) MaterialTheme.colorScheme.surfaceVariant else if (isSelected) CreditiaPrimary else Color.Transparent)
                                 .border(
                                     1.5.dp,
-                                    if (isSelected) CreditiaPrimary else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                                    if (isLocked) MaterialTheme.colorScheme.outline.copy(alpha = 0.3f) else if (isSelected) CreditiaPrimary else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
                                     CircleShape
                                 ),
                             contentAlignment = Alignment.Center
                         ) {
-                            if (isSelected) {
+                            if (isLocked) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Bloqueado",
+                                    tint = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                            } else if (isSelected) {
                                 Icon(
                                     imageVector = Icons.Default.Check,
                                     contentDescription = "Seleccionado",
@@ -2534,9 +2476,9 @@ fun ExpenseCardItem(
                             .testTag("btn_edit_expense_${expense.id}")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Edit,
-                            contentDescription = "Editar",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Edit,
+                            contentDescription = if (isLocked) "Bloqueado (no se puede editar)" else "Editar",
+                            tint = if (isLocked) MaterialTheme.colorScheme.error.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -2547,9 +2489,9 @@ fun ExpenseCardItem(
                             .testTag("btn_delete_expense_${expense.id}")
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Delete,
-                            contentDescription = "Eliminar",
-                            tint = CreditiaError,
+                            imageVector = if (isLocked) Icons.Default.Lock else Icons.Default.Delete,
+                            contentDescription = if (isLocked) "Bloqueado (no se puede eliminar)" else "Eliminar",
+                            tint = if (isLocked) MaterialTheme.colorScheme.error.copy(alpha = 0.7f) else CreditiaError,
                             modifier = Modifier.size(20.dp)
                         )
                     }
@@ -2581,42 +2523,88 @@ fun GroupedTransactionCardItem(
     modifier: Modifier = Modifier
 ) {
     var isExpanded by remember { mutableStateOf(true) }
+    var showUngroupConfirmDialog by remember { mutableStateOf(false) }
+
+    if (showUngroupConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showUngroupConfirmDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.LinkOff,
+                    contentDescription = null,
+                    tint = CreditiaTertiary,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "¿Desagrupar consumos?",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            },
+            text = {
+                Text(
+                    text = "¿Estás seguro de que deseas desagrupar los ${expenses.size} consumos de esta transacción?",
+                    fontSize = 13.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showUngroupConfirmDialog = false
+                        onUngroup()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CreditiaTertiary),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Desagrupar", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showUngroupConfirmDialog = false }) {
+                    Text("Cancelar", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        )
+    }
 
     Card(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(containerColor = CreditiaSurfaceContainerLow),
         border = BorderStroke(1.5.dp, CreditiaTertiary.copy(alpha = 0.45f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(14.dp))
             .testTag("grouped_transaction_card_$groupId")
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             // Cabecera del Panel de Transacción Agrupada
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .clickable { isExpanded = !isExpanded }
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                    .padding(horizontal = 2.dp, vertical = 0.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.weight(1f)
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(42.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(8.dp))
                             .background(CreditiaTertiary.copy(alpha = 0.15f)),
                         contentAlignment = Alignment.Center
                     ) {
@@ -2624,18 +2612,18 @@ fun GroupedTransactionCardItem(
                             imageVector = Icons.Default.Layers,
                             contentDescription = "Transacción Agrupada",
                             tint = CreditiaTertiary,
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
 
-                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Text(
                                 text = groupName,
-                                fontSize = 15.sp,
+                                fontSize = 14.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
@@ -2648,7 +2636,7 @@ fun GroupedTransactionCardItem(
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = CreditiaTertiary,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                                 )
                             }
                         }
@@ -2662,25 +2650,25 @@ fun GroupedTransactionCardItem(
 
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
                             text = String.format(Locale.US, "$ %,.2f", totalAmount),
-                            fontSize = 15.sp,
+                            fontSize = 14.5.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = "Total grupo",
-                            fontSize = 10.sp,
+                            fontSize = 9.5.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
 
                     IconButton(
-                        onClick = onUngroup,
-                        modifier = Modifier.size(36.dp)
+                        onClick = { showUngroupConfirmDialog = true },
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.LinkOff,
@@ -2692,13 +2680,13 @@ fun GroupedTransactionCardItem(
 
                     IconButton(
                         onClick = { isExpanded = !isExpanded },
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
                             imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
                             contentDescription = if (isExpanded) "Colapsar" else "Expandir",
                             tint = CreditiaTertiary,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                     }
                 }
@@ -2713,7 +2701,7 @@ fun GroupedTransactionCardItem(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 4.dp),
+                        .padding(top = 2.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     HorizontalDivider(
@@ -2723,10 +2711,12 @@ fun GroupedTransactionCardItem(
 
                     expenses.forEach { childExpense ->
                         val isChildSelected = childExpense.id in selectedExpenseIds
+                        val isChildLocked = childExpense.isLockedByActiveDeferred(allExpenses)
                         ExpenseCardItem(
                             expense = childExpense,
                             isSelected = isChildSelected,
                             isSelectionMode = isSelectionMode,
+                            isLocked = isChildLocked,
                             onToggleSelect = { onToggleSelect(childExpense.id) },
                             onLongPress = { onToggleSelect(childExpense.id) },
                             onEdit = { onEdit(childExpense) },

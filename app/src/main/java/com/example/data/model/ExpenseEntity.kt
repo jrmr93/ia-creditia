@@ -61,6 +61,17 @@ data class ExpenseEntity(
         return allExpenses.any { it.deferredGroupId == this.deferredGroupId && it.isDeferredInstallment() }
     }
 
+    /**
+     * Retorna verdadero si este registro está bloqueado contra eliminación y edición
+     * debido a que tiene cuotas diferidas activas asociadas.
+     * Aplica tanto al consumo original como a la nota de crédito generada por el diferido.
+     */
+    fun isLockedByActiveDeferred(allExpenses: List<ExpenseEntity>): Boolean {
+        if (deferredGroupId.isNullOrBlank()) return false
+        if (isCreditNote()) return true
+        return isOriginalDeferredExpense() && hasActiveDeferredInstallments(allExpenses)
+    }
+
     fun getDeferredInfo(): Pair<Int, Int>? {
         val match = Regex("""\s*\(Cuota\s*(\d+)/(\d+)\)\s*$""").find(description) ?: return null
         val current = match.groupValues[1].toIntOrNull() ?: return null

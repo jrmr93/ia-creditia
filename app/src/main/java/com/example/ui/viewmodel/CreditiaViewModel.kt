@@ -308,8 +308,11 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     // Modal triggers
     fun promptDeleteExpense(expense: ExpenseEntity) {
         val all = allExpenses.value
-        if (expense.isOriginalDeferredExpense() && expense.hasActiveDeferredInstallments(all)) {
-            showToast("No se puede eliminar este consumo porque tiene cuotas diferidas activas")
+        if (expense.isLockedByActiveDeferred(all)) {
+            showToast(
+                if (expense.isCreditNote()) "Las notas de crédito creadas por un diferido no se pueden eliminar"
+                else "Registro bloqueado: no se puede eliminar porque tiene cuotas diferidas activas"
+            )
             return
         }
         _uiState.update { it.copy(expenseToDelete = expense) }
@@ -322,8 +325,11 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     fun confirmDeleteExpense() {
         val target = _uiState.value.expenseToDelete ?: return
         val all = allExpenses.value
-        if (target.isOriginalDeferredExpense() && target.hasActiveDeferredInstallments(all)) {
-            showToast("No se puede eliminar este consumo porque tiene cuotas diferidas activas")
+        if (target.isLockedByActiveDeferred(all)) {
+            showToast(
+                if (target.isCreditNote()) "Las notas de crédito creadas por un diferido no se pueden eliminar"
+                else "Registro bloqueado: no se puede eliminar porque tiene cuotas diferidas activas"
+            )
             _uiState.update { it.copy(expenseToDelete = null) }
             return
         }
@@ -343,8 +349,11 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             val target = repository.getExpenseById(expenseId)
             val all = allExpenses.value
-            if (target != null && target.isOriginalDeferredExpense() && target.hasActiveDeferredInstallments(all)) {
-                showToast("No se puede eliminar este consumo porque tiene cuotas diferidas activas")
+            if (target != null && target.isLockedByActiveDeferred(all)) {
+                showToast(
+                    if (target.isCreditNote()) "Las notas de crédito creadas por un diferido no se pueden eliminar"
+                    else "Registro bloqueado: no se puede eliminar porque tiene cuotas diferidas activas"
+                )
                 _uiState.update { it.copy(expenseToDelete = null, editingExpense = null) }
                 return@launch
             }
@@ -572,6 +581,12 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun toggleExpenseSelection(expenseId: Long) {
+        val all = allExpenses.value
+        val target = all.find { it.id == expenseId }
+        if (target != null && target.isLockedByActiveDeferred(all)) {
+            showToast("Registro bloqueado: no se puede seleccionar ni agrupar")
+            return
+        }
         _uiState.update { current ->
             val newSet = if (expenseId in current.selectedExpenseIds) {
                 current.selectedExpenseIds - expenseId
@@ -1209,8 +1224,11 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
 
     fun startEditExpense(expense: ExpenseEntity) {
         val all = allExpenses.value
-        if (expense.isOriginalDeferredExpense() && expense.hasActiveDeferredInstallments(all)) {
-            showToast("No se puede modificar este consumo porque tiene cuotas diferidas activas")
+        if (expense.isLockedByActiveDeferred(all)) {
+            showToast(
+                if (expense.isCreditNote()) "Las notas de crédito creadas por un diferido no se pueden modificar"
+                else "Registro bloqueado: no se puede modificar porque tiene cuotas diferidas activas"
+            )
             return
         }
         _uiState.update { it.copy(editingExpense = expense) }
@@ -1249,8 +1267,11 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             if (id != null && id > 0) {
                 val existing = _uiState.value.editingExpense ?: repository.getExpenseById(id)
                 val all = allExpenses.value
-                if (existing != null && existing.isOriginalDeferredExpense() && existing.hasActiveDeferredInstallments(all)) {
-                    showToast("No se puede modificar este consumo porque tiene cuotas diferidas activas")
+                if (existing != null && existing.isLockedByActiveDeferred(all)) {
+                    showToast(
+                        if (existing.isCreditNote()) "Las notas de crédito creadas por un diferido no se pueden modificar"
+                        else "Registro bloqueado: no se puede modificar porque tiene cuotas diferidas activas"
+                    )
                     _uiState.update { it.copy(editingExpense = null) }
                     return@launch
                 }
@@ -1324,6 +1345,11 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             showToast("Selecciona al menos 2 consumos para agrupar")
             return
         }
+        val all = allExpenses.value
+        if (selectedIds.any { id -> all.find { it.id == id }?.isLockedByActiveDeferred(all) == true }) {
+            showToast("No se pueden agrupar registros bloqueados")
+            return
+        }
         viewModelScope.launch {
             val name = if (!groupName.isNullOrBlank()) groupName.trim() else "Transacción Agrupada"
             repository.groupExpenses(selectedIds, name)
@@ -1343,6 +1369,7 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         originalExpense: ExpenseEntity,
         months: Int,
         monthlyInterestRate: Double,
+        startDateString: String? = null,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -1353,7 +1380,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                     originalExpense = originalExpense,
                     months = months,
                     monthlyInterestRate = monthlyInterestRate,
-                    cutDay = cutDay
+                    cutDay = cutDay,
+                    startDateString = startDateString
                 )
                 showToast("✓ Consumo diferido a $months meses generado con éxito")
                 _uiState.update { it.copy(editingExpense = null) }
@@ -1364,10 +1392,18 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun deferExpense(
+        originalExpense: ExpenseEntity,
+        months: Int,
+        monthlyInterestRate: Double,
+        onSuccess: () -> Unit
+    ) = deferExpense(originalExpense, months, monthlyInterestRate, null, onSuccess)
+
     fun deferMultipleExpenses(
         selectedExpenses: List<ExpenseEntity>,
         months: Int,
         monthlyInterestRate: Double,
+        startDateString: String? = null,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -1379,7 +1415,8 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
                     selectedExpenses = selectedExpenses,
                     months = months,
                     monthlyInterestRate = monthlyInterestRate,
-                    cutDay = cutDay
+                    cutDay = cutDay,
+                    startDateString = startDateString
                 )
                 showToast("✓ ${selectedExpenses.size} consumos consolidados en $months cuotas con éxito")
                 onSuccess()
@@ -1388,6 +1425,13 @@ class CreditiaViewModel(application: Application) : AndroidViewModel(application
             }
         }
     }
+
+    fun deferMultipleExpenses(
+        selectedExpenses: List<ExpenseEntity>,
+        months: Int,
+        monthlyInterestRate: Double,
+        onSuccess: () -> Unit
+    ) = deferMultipleExpenses(selectedExpenses, months, monthlyInterestRate, null, onSuccess)
 
     /**
      * Registra directamente una compra diferida en N cuotas desde "+ Registrar"

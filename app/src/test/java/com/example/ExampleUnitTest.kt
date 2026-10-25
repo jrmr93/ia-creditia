@@ -484,11 +484,11 @@ class ExampleUnitTest {
     assertEquals(com.example.data.model.ExpenseEntity.TYPE_CREDIT_NOTE, updatedNotaCredito.transactionType)
     assertEquals(1200.0, updatedNotaCredito.amount, 0.001)
 
-    // Verificar que el consumo original preservado también se sincronizó al mismo periodo para anularse
+    // Verificar que el consumo original preservado conserva su fecha y periodo original
     val preservedOriginal = fakeExpenseDao.expenses.find { it.id == original.id }
     assertNotNull(preservedOriginal)
-    assertEquals("2026/11/10", preservedOriginal!!.dateString)
-    assertEquals("Noviembre 2026", preservedOriginal.billingPeriod)
+    assertEquals("2026/10/05", preservedOriginal!!.dateString)
+    assertEquals("Octubre 2026", preservedOriginal.billingPeriod)
 
     // Verificar que las cuotas 1, 2, 3 se reorganizaron correlativamente
     val finalCuota1 = fakeExpenseDao.expenses.find { it.description.contains("(Cuota 1/3)") }
@@ -1371,4 +1371,91 @@ class ImageSearchTest {
       println("Brand $brand ($domain) -> Google S2 code: ${resp.code} size: ${resp.body?.bytes()?.size}")
     }
   }
+
+  @Test
+  fun testDeferMultipleExpensesWithCustomStartDate() = kotlinx.coroutines.runBlocking {
+    val expenseDao = FakeExpenseDao()
+    val cardDao = FakeCreditCardDao()
+    val repo = com.example.data.repository.CreditiaRepository(cardDao, expenseDao)
+
+    val exp1 = com.example.data.model.ExpenseEntity(
+      id = 501,
+      cardId = 1,
+      sequenceNumber = 1,
+      establishment = "Restaurante",
+      description = "Cena",
+      amount = 100.0,
+      dateString = "2026/10/05",
+      billingPeriod = "Octubre 2026"
+    )
+    val exp2 = com.example.data.model.ExpenseEntity(
+      id = 502,
+      cardId = 1,
+      sequenceNumber = 2,
+      establishment = "Cine",
+      description = "Entradas",
+      amount = 50.0,
+      dateString = "2026/10/08",
+      billingPeriod = "Octubre 2026"
+    )
+    expenseDao.insertExpense(exp1)
+    expenseDao.insertExpense(exp2)
+
+    val customStartDate = "2026/11/15"
+    val results = repo.deferMultipleExpenses(
+      selectedExpenses = listOf(exp1, exp2),
+      months = 3,
+      monthlyInterestRate = 0.0,
+      cutDay = 24,
+      startDateString = customStartDate
+    )
+
+    // 1 Nota de crédito + 3 cuotas
+    assertEquals(4, results.size)
+    val notaCredito = results.find { it.isCreditNote() }
+    assertNotNull(notaCredito)
+    assertEquals(customStartDate, notaCredito?.dateString)
+
+    val installments = results.filter { !it.isCreditNote() }
+    assertEquals(3, installments.size)
+    assertEquals(50.0, installments[0].amount, 0.01)
+
+    // 1. Verificar que los consumos originales conservan sus fechas intactas
+    val savedExp1 = expenseDao.getExpenseById(501)
+    val savedExp2 = expenseDao.getExpenseById(502)
+    assertEquals("2026/10/05", savedExp1?.dateString)
+    assertEquals("2026/10/08", savedExp2?.dateString)
+
+    // 2. Verificar que están bloqueados
+    val allExpenses = expenseDao.expenses.toList()
+    assertTrue(savedExp1?.isLockedByActiveDeferred(allExpenses) == true)
+    assertTrue(savedExp2?.isLockedByActiveDeferred(allExpenses) == true)
+    assertTrue(notaCredito?.isLockedByActiveDeferred(allExpenses) == true)
+
+    // 3. Verificar que la nota de crédito no se puede modificar ni eliminar directamente
+    val dbNc = expenseDao.expenses.find { it.isCreditNote() }!!
+    repo.updateExpense(dbNc.copy(amount = 999.0))
+    val checkNc = expenseDao.getExpenseById(dbNc.id)
+    assertEquals("El monto de la nota de crédito no debe modificarse", 150.0, checkNc?.amount)
+
+    val deleteNcResult = repo.deleteExpenseWithCascade(dbNc)
+    assertEquals(0, deleteNcResult)
+    val checkNcAfterDelete = expenseDao.getExpenseById(dbNc.id)
+    assertNotNull("La nota de crédito no debe eliminarse directamente", checkNcAfterDelete)
+
+    // 4. Modificar fecha de la primera cuota diferida:
+    // Debe cambiar la fecha de las cuotas y de la nota de crédito, pero NO de los consumos originales
+    val cuota1 = expenseDao.expenses.find { it.description.contains("(Cuota 1/3)") }!!
+    val updatedInstallment = cuota1.copy(dateString = "2026/12/01")
+    repo.updateExpenseWithDeferredSync(updatedInstallment, cutDay = 24)
+
+    val afterExp1 = expenseDao.getExpenseById(501)
+    val afterExp2 = expenseDao.getExpenseById(502)
+    assertEquals("Los consumos originales deben conservar su fecha original", "2026/10/05", afterExp1?.dateString)
+    assertEquals("Los consumos originales deben conservar su fecha original", "2026/10/08", afterExp2?.dateString)
+
+    val afterNc = expenseDao.getExpenseById(dbNc.id)
+    assertEquals("La nota de crédito sí debe actualizar su fecha", "2026/12/01", afterNc?.dateString)
+  }
 }
+

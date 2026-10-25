@@ -5,6 +5,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.EditCalendar
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxSize
@@ -1838,6 +1839,10 @@ fun EditBillingCycleRangeDialog(
                     value = endDateStr,
                     onValueChange = {
                         endDateStr = it
+                        try {
+                            val c = parseCalendar(it)
+                            cutDateStr = formatFormattedDayOfWeek(c)
+                        } catch (_: Exception) {}
                     },
                     label = { Text("Fecha de Fin del ciclo (Hasta)") },
                     placeholder = { Text("YYYY/MM/DD") },
@@ -1853,7 +1858,7 @@ fun EditBillingCycleRangeDialog(
                                 { _, y, m, d ->
                                     val formatted = String.format(Locale.US, "%04d/%02d/%02d", y, m + 1, d)
                                     endDateStr = formatted
-                                    // Sugerir actualización armónica del corte si aún coincide
+                                    // Sincronizar automáticamente la fecha de corte
                                     val selCal = Calendar.getInstance().apply { set(y, m, d) }
                                     cutDateStr = formatFormattedDayOfWeek(selCal)
                                 },
@@ -1872,39 +1877,49 @@ fun EditBillingCycleRangeDialog(
                     shape = RoundedCornerShape(10.dp)
                 )
 
-                // 3. Fecha de Corte de la Tarjeta (Visible en el gráfico)
-                OutlinedTextField(
-                    value = cutDateStr,
-                    onValueChange = { cutDateStr = it },
-                    label = { Text("Fecha de Corte (Gráfico Tarjeta)") },
-                    placeholder = { Text("Ej: Sáb 24/10/2026") },
-                    singleLine = true,
+                // 3. Fecha de Corte de la Tarjeta (No editable - sincronizada automáticamente)
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = CreditiaSurfaceContainerLow,
+                    border = BorderStroke(1.dp, CreditiaPrimary.copy(alpha = 0.25f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("input_cut_date"),
-                    trailingIcon = {
-                        IconButton(onClick = {
-                            val c = parseCalendar(cutDateStr)
-                            DatePickerDialog(
-                                context,
-                                { _, y, m, d ->
-                                    val selCal = Calendar.getInstance().apply { set(y, m, d) }
-                                    cutDateStr = formatFormattedDayOfWeek(selCal)
-                                },
-                                c.get(Calendar.YEAR),
-                                c.get(Calendar.MONTH),
-                                c.get(Calendar.DAY_OF_MONTH)
-                            ).show()
-                        }) {
-                            Icon(
-                                imageVector = Icons.Default.EventRepeat,
-                                contentDescription = "Elegir fecha de corte",
-                                tint = CreditiaPrimary
+                        .testTag("indicator_cut_date")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = "Fecha de Corte (Gráfico Tarjeta)",
+                                fontSize = 11.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Text(
+                                text = cutDateStr.ifBlank { "Sincronizada con fin de ciclo" },
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = CreditiaPrimary
+                            )
+                            Text(
+                                text = "Se obtiene automáticamente de la Fecha de Fin del ciclo",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                    },
-                    shape = RoundedCornerShape(10.dp)
-                )
+                        Icon(
+                            imageVector = Icons.Default.EventRepeat,
+                            contentDescription = null,
+                            tint = CreditiaPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
 
                 // 4. Fecha Máxima de Pago de la Tarjeta (Visible en el gráfico)
                 OutlinedTextField(
@@ -1931,9 +1946,9 @@ fun EditBillingCycleRangeDialog(
                             ).show()
                         }) {
                             Icon(
-                                imageVector = Icons.Default.CheckCircle,
+                                imageVector = Icons.Default.CalendarToday,
                                 contentDescription = "Elegir fecha máxima de pago",
-                                tint = Color(0xFF10B981)
+                                tint = CreditiaPrimary
                             )
                         }
                     },

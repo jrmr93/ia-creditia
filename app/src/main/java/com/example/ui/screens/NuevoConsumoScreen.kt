@@ -16,6 +16,7 @@ import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.border
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.material.icons.filled.ZoomIn
@@ -163,6 +164,7 @@ fun NuevoConsumoScreen(
             if (editing != null) String.format(Locale.US, "%.2f", editing.amount) else "0.00"
         )
     }
+    var hasAmountBeenFocused by remember { mutableStateOf(false) }
 
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showConfirmEditDialog by remember { mutableStateOf(false) }
@@ -1127,6 +1129,14 @@ fun NuevoConsumoScreen(
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .onFocusChanged { focusState ->
+                                    if (focusState.isFocused && !hasAmountBeenFocused && editing == null) {
+                                        hasAmountBeenFocused = true
+                                        if (amountString == "0.00" || amountString == "0") {
+                                            amountString = ""
+                                        }
+                                    }
+                                }
                                 .testTag("input_amount")
                         )
 
@@ -2540,17 +2550,17 @@ fun NuevoConsumoScreen(
                 cardName = card?.cardName ?: "Tarjeta",
                 repository = viewModel.repository,
                 onDismiss = { showDeferDialog = false },
-                onConfirm = { months, monthlyInterestRate ->
+                onConfirm = { months, monthlyInterestRate, customStartDate ->
                     showDeferDialog = false
                     val targetExpense = editing.copy(
                         cardId = card?.id ?: editing.cardId,
                         amount = parsedAmount,
-                        dateString = formattedDate,
+                        dateString = if (editing.dateString.isNotBlank()) editing.dateString else formattedDate,
                         establishment = currentEstablishment,
                         description = currentDescription,
                         receiptUri = currentReceipt
                     )
-                    viewModel.deferExpense(targetExpense, months, monthlyInterestRate) {
+                    viewModel.deferExpense(targetExpense, months, monthlyInterestRate, customStartDate) {
                         onBack()
                     }
                 }
