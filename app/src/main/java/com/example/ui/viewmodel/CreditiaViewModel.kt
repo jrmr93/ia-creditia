@@ -220,18 +220,29 @@ class CreditiaViewModel @JvmOverloads constructor(
 
                 _uiState.update { current ->
                     val currentSelected = current.selectedCard
+                    val savedCardId = prefs.getLong("selected_card_id", -1L)
                     val newSelected = if (cardsList.isEmpty()) {
                         null
                     } else if (currentSelected != null) {
                         cardsList.find { it.id == currentSelected.id } ?: cardsList.first()
                     } else {
-                        cardsList.find { it.isDefault } ?: cardsList.first()
+                        (if (savedCardId > 0) cardsList.find { it.id == savedCardId } else null)
+                            ?: cardsList.find { it.isDefault }
+                            ?: cardsList.first()
                     }
-                    val currentPeriod = getCurrentActivePeriod(newSelected)
+                    val defaultPeriod = getCurrentActivePeriod(newSelected)
+                    val savedPeriod = prefs.getString("selected_period", "") ?: ""
+                    val activePeriod = if (current.selectedPeriod.isNotBlank()) {
+                        current.selectedPeriod
+                    } else if (savedPeriod.isNotBlank()) {
+                        savedPeriod
+                    } else {
+                        defaultPeriod
+                    }
                     current.copy(
                         cards = cardsList,
                         selectedCard = newSelected,
-                        selectedPeriod = if (current.selectedPeriod.isBlank()) currentPeriod else current.selectedPeriod
+                        selectedPeriod = activePeriod
                     )
                 }
             }
@@ -276,6 +287,7 @@ class CreditiaViewModel @JvmOverloads constructor(
 
     fun selectCard(card: CreditCardEntity) {
         val currentPeriod = getCurrentActivePeriod(card)
+        prefs.edit().putLong("selected_card_id", card.id).putString("selected_period", currentPeriod).apply()
         _uiState.update { it.copy(selectedCard = card, selectedPeriod = currentPeriod, selectedExactDate = null) }
         showToast("Tarjeta activa: ${card.cardName}")
     }
@@ -286,12 +298,14 @@ class CreditiaViewModel @JvmOverloads constructor(
         if (currentCards.size > 1 && current != null) {
             val next = currentCards.firstOrNull { it.id != current.id } ?: currentCards.first()
             val currentPeriod = getCurrentActivePeriod(next)
+            prefs.edit().putLong("selected_card_id", next.id).putString("selected_period", currentPeriod).apply()
             _uiState.update { it.copy(selectedCard = next, selectedPeriod = currentPeriod, selectedExactDate = null) }
             showToast("Cambiando a ${next.cardName}")
         }
     }
 
     fun selectPeriod(period: String) {
+        prefs.edit().putString("selected_period", period).apply()
         _uiState.update { it.copy(selectedPeriod = period, selectedExactDate = null) }
         showToast("Periodo: $period")
     }
@@ -896,7 +910,7 @@ class CreditiaViewModel @JvmOverloads constructor(
     fun getBillingCycleRange(cardId: Long?, periodName: String, cutDay: Int): String {
         if (cardId != null && periodName.isNotBlank() && periodName != "Todos los históricos") {
             val key = "${cardId}_${periodName}"
-            val custom = _uiState.value.customCycleRanges[key]
+            val custom = _uiState.value.customCycleRanges[key] ?: prefs.getString("custom_cycle_range_$key", null)
             if (!custom.isNullOrBlank()) {
                 return custom
             }
@@ -906,22 +920,28 @@ class CreditiaViewModel @JvmOverloads constructor(
 
     fun getCustomBillingCycleRange(cardId: Long?, periodName: String): String? {
         if (cardId == null || periodName.isBlank() || periodName == "Todos los históricos") return null
-        return _uiState.value.customCycleRanges["${cardId}_${periodName}"]
+        val key = "${cardId}_${periodName}"
+        return _uiState.value.customCycleRanges[key] ?: prefs.getString("custom_cycle_range_$key", null)
     }
 
     fun setCustomBillingCycleRange(cardId: Long, periodName: String, customRange: String?) {
         val key = "${cardId}_${periodName}"
         val prefKey = "custom_cycle_range_$key"
         if (customRange.isNullOrBlank()) {
-            prefs.edit().remove(prefKey).apply()
+            prefs.edit().remove(prefKey).commit()
             _uiState.update { current ->
                 current.copy(customCycleRanges = current.customCycleRanges - key)
             }
             showToast("Rango de facturación restablecido a cálculo automático")
         } else {
-            prefs.edit().putString(prefKey, customRange.trim()).apply()
+            val trimmed = customRange.trim()
+            prefs.edit()
+                .putString(prefKey, trimmed)
+                .putLong("selected_card_id", cardId)
+                .putString("selected_period", periodName)
+                .commit()
             _uiState.update { current ->
-                current.copy(customCycleRanges = current.customCycleRanges + (key to customRange.trim()))
+                current.copy(customCycleRanges = current.customCycleRanges + (key to trimmed))
             }
             showToast("✓ Rango de facturación sobrescrito para $periodName")
         }
@@ -929,22 +949,28 @@ class CreditiaViewModel @JvmOverloads constructor(
 
     fun getCustomCutDate(cardId: Long?, periodName: String): String? {
         if (cardId == null || periodName.isBlank() || periodName == "Todos los históricos") return null
-        return _uiState.value.customCutDates["${cardId}_${periodName}"]
+        val key = "${cardId}_${periodName}"
+        return _uiState.value.customCutDates[key] ?: prefs.getString("custom_cut_date_$key", null)
     }
 
     fun setCustomCutDate(cardId: Long, periodName: String, customCutDate: String?) {
         val key = "${cardId}_${periodName}"
         val prefKey = "custom_cut_date_$key"
         if (customCutDate.isNullOrBlank()) {
-            prefs.edit().remove(prefKey).apply()
+            prefs.edit().remove(prefKey).commit()
             _uiState.update { current ->
                 current.copy(customCutDates = current.customCutDates - key)
             }
             showToast("Fecha de corte restablecida a cálculo automático")
         } else {
-            prefs.edit().putString(prefKey, customCutDate.trim()).apply()
+            val trimmed = customCutDate.trim()
+            prefs.edit()
+                .putString(prefKey, trimmed)
+                .putLong("selected_card_id", cardId)
+                .putString("selected_period", periodName)
+                .commit()
             _uiState.update { current ->
-                current.copy(customCutDates = current.customCutDates + (key to customCutDate.trim()))
+                current.copy(customCutDates = current.customCutDates + (key to trimmed))
             }
             showToast("✓ Fecha de corte sobrescrita para $periodName")
         }
@@ -952,22 +978,28 @@ class CreditiaViewModel @JvmOverloads constructor(
 
     fun getCustomPaymentLimitDate(cardId: Long?, periodName: String): String? {
         if (cardId == null || periodName.isBlank() || periodName == "Todos los históricos") return null
-        return _uiState.value.customPaymentLimits["${cardId}_${periodName}"]
+        val key = "${cardId}_${periodName}"
+        return _uiState.value.customPaymentLimits[key] ?: prefs.getString("custom_payment_limit_$key", null)
     }
 
     fun setCustomPaymentLimitDate(cardId: Long, periodName: String, customPaymentDate: String?) {
         val key = "${cardId}_${periodName}"
         val prefKey = "custom_payment_limit_$key"
         if (customPaymentDate.isNullOrBlank()) {
-            prefs.edit().remove(prefKey).apply()
+            prefs.edit().remove(prefKey).commit()
             _uiState.update { current ->
                 current.copy(customPaymentLimits = current.customPaymentLimits - key)
             }
             showToast("Fecha máxima de pago restablecida a cálculo automático")
         } else {
-            prefs.edit().putString(prefKey, customPaymentDate.trim()).apply()
+            val trimmed = customPaymentDate.trim()
+            prefs.edit()
+                .putString(prefKey, trimmed)
+                .putLong("selected_card_id", cardId)
+                .putString("selected_period", periodName)
+                .commit()
             _uiState.update { current ->
-                current.copy(customPaymentLimits = current.customPaymentLimits + (key to customPaymentDate.trim()))
+                current.copy(customPaymentLimits = current.customPaymentLimits + (key to trimmed))
             }
             showToast("✓ Fecha máxima de pago sobrescrita para $periodName")
         }
@@ -991,12 +1023,14 @@ class CreditiaViewModel @JvmOverloads constructor(
         for ((k, _) in prefs.all) {
             if (k.startsWith("custom_cut_date_") ||
                 k.startsWith("custom_payment_limit_") ||
-                k.startsWith("custom_cycle_range_")
+                k.startsWith("custom_cycle_range_") ||
+                k == "selected_card_id" ||
+                k == "selected_period"
             ) {
                 editor.remove(k)
             }
         }
-        editor.apply()
+        editor.commit()
 
         _uiState.update {
             it.copy(
@@ -1057,6 +1091,17 @@ class CreditiaViewModel @JvmOverloads constructor(
      */
     suspend fun exportFullBackup(outputStream: java.io.OutputStream) {
         val app = getApplication<Application>()
+        val currentCard = _uiState.value.selectedCard
+        val currentPeriod = _uiState.value.selectedPeriod
+        val editor = prefs.edit()
+        if (currentCard != null) {
+            editor.putLong("selected_card_id", currentCard.id)
+        }
+        if (currentPeriod.isNotBlank()) {
+            editor.putString("selected_period", currentPeriod)
+        }
+        editor.commit()
+
         val cards = repository.getAllCardsList()
         val expenses = repository.getAllExpensesList()
         com.example.util.BackupUtil.exportFullBackup(app, cards, expenses, outputStream)
@@ -1072,19 +1117,7 @@ class CreditiaViewModel @JvmOverloads constructor(
         ReceiptStorageUtil.deleteAllReceiptFiles(app)
         LogoStorageUtil.deleteAllLogoFiles(app)
         repository.clearAllData()
-        logoPrefs.edit().clear().apply()
-
-        // Limpiar fechas personalizadas previas para asegurar restauración limpia
-        val clearPrefsEditor = prefs.edit()
-        for ((k, _) in prefs.all) {
-            if (k.startsWith("custom_cut_date_") ||
-                k.startsWith("custom_payment_limit_") ||
-                k.startsWith("custom_cycle_range_")
-            ) {
-                clearPrefsEditor.remove(k)
-            }
-        }
-        clearPrefsEditor.apply()
+        logoPrefs.edit().clear().commit()
 
         val parsed = com.example.util.BackupUtil.parseBackup(app, inputStream)
 
@@ -1112,29 +1145,61 @@ class CreditiaViewModel @JvmOverloads constructor(
             restoredExpenses++
         }
 
-        // Restaurar configuración y preferencias de la aplicación si están presentes
-        if (parsed.preferences.isNotEmpty()) {
-            val editor = prefs.edit()
-            for ((rawKey, value) in parsed.preferences) {
-                var key = rawKey
-                for ((oldCardId, newCardId) in idMapping) {
-                    if (oldCardId != newCardId) {
-                        if (rawKey.startsWith("custom_cycle_range_${oldCardId}_")) {
-                            key = rawKey.replaceFirst("custom_cycle_range_${oldCardId}_", "custom_cycle_range_${newCardId}_")
-                        } else if (rawKey.startsWith("custom_cut_date_${oldCardId}_")) {
-                            key = rawKey.replaceFirst("custom_cut_date_${oldCardId}_", "custom_cut_date_${newCardId}_")
-                        } else if (rawKey.startsWith("custom_payment_limit_${oldCardId}_")) {
-                            key = rawKey.replaceFirst("custom_payment_limit_${oldCardId}_", "custom_payment_limit_${newCardId}_")
-                        }
+        // Limpiar y restaurar configuración y preferencias de la aplicación
+        val reloadedRanges = mutableMapOf<String, String>()
+        val reloadedCutDates = mutableMapOf<String, String>()
+        val reloadedPaymentLimits = mutableMapOf<String, String>()
+
+        val editor = prefs.edit()
+        for ((k, _) in prefs.all) {
+            if (k.startsWith("custom_cut_date_") ||
+                k.startsWith("custom_payment_limit_") ||
+                k.startsWith("custom_cycle_range_") ||
+                k == "selected_card_id" ||
+                k == "selected_period"
+            ) {
+                editor.remove(k)
+            }
+        }
+
+        fun remapKey(rawKey: String, mapping: Map<Long, Long>): String {
+            val prefixes = listOf("custom_cycle_range_", "custom_cut_date_", "custom_payment_limit_")
+            for (prefix in prefixes) {
+                if (rawKey.startsWith(prefix)) {
+                    val rest = rawKey.removePrefix(prefix)
+                    val oldCardIdStr = rest.substringBefore('_')
+                    val period = rest.substringAfter('_', "")
+                    val oldCardId = oldCardIdStr.toLongOrNull()
+                    if (oldCardId != null && period.isNotBlank()) {
+                        val newCardId = mapping[oldCardId] ?: oldCardId
+                        return "$prefix${newCardId}_$period"
                     }
                 }
+            }
+            return rawKey
+        }
+
+        if (parsed.preferences.isNotEmpty()) {
+            for ((rawKey, value) in parsed.preferences) {
+                val key = remapKey(rawKey, idMapping)
                 when (value) {
                     is Boolean -> editor.putBoolean(key, value)
                     is Int -> editor.putInt(key, value)
-                    is Long -> editor.putLong(key, value)
+                    is Long -> {
+                        if (key == "selected_card_id") {
+                            val newCardId = idMapping[value] ?: value
+                            editor.putLong(key, newCardId)
+                        } else {
+                            editor.putLong(key, value)
+                        }
+                    }
                     is Double -> {
                         if (key == "notification_lead_days") {
                             editor.putInt(key, value.toInt())
+                        } else if (key == "selected_card_id") {
+                            val oldId = value.toLong()
+                            val newCardId = idMapping[oldId] ?: oldId
+                            editor.putLong(key, newCardId)
                         } else {
                             editor.putLong(key, value.toLong())
                         }
@@ -1142,9 +1207,21 @@ class CreditiaViewModel @JvmOverloads constructor(
                     is String -> editor.putString(key, value)
                     else -> if (value != null) editor.putString(key, value.toString())
                 }
+
+                // Cargar inmediatamente en memoria las fechas personalizadas
+                val strValue = value?.toString() ?: ""
+                if (strValue.isNotBlank()) {
+                    if (key.startsWith("custom_cycle_range_")) {
+                        reloadedRanges[key.removePrefix("custom_cycle_range_")] = strValue
+                    } else if (key.startsWith("custom_cut_date_")) {
+                        reloadedCutDates[key.removePrefix("custom_cut_date_")] = strValue
+                    } else if (key.startsWith("custom_payment_limit_")) {
+                        reloadedPaymentLimits[key.removePrefix("custom_payment_limit_")] = strValue
+                    }
+                }
             }
-            editor.apply()
         }
+        editor.commit()
 
         // Restaurar catálogo de logos recordados
         if (parsed.rememberedLogos.isNotEmpty()) {
@@ -1152,13 +1229,10 @@ class CreditiaViewModel @JvmOverloads constructor(
             for ((estKey, logoPath) in parsed.rememberedLogos) {
                 lEditor.putString(estKey, logoPath)
             }
-            lEditor.apply()
+            lEditor.commit()
         }
 
-        // Recargar fechas de corte, rangos y fechas máximas de pago personalizadas
-        val reloadedRanges = mutableMapOf<String, String>()
-        val reloadedCutDates = mutableMapOf<String, String>()
-        val reloadedPaymentLimits = mutableMapOf<String, String>()
+        // Asegurar que cualquier fecha en prefs también quede reflejada en memoria
         for ((k, v) in prefs.all) {
             if (k.startsWith("custom_cycle_range_") && v is String) {
                 reloadedRanges[k.removePrefix("custom_cycle_range_")] = v
@@ -1170,8 +1244,45 @@ class CreditiaViewModel @JvmOverloads constructor(
         }
 
         val allCardsList = repository.getAllCardsList()
-        val targetCard = allCardsList.firstOrNull { it.isDefault } ?: allCardsList.firstOrNull()
-        val defaultPeriod = targetCard?.let { getCurrentActivePeriod(it) } ?: ""
+        val rawSavedCardId = parsed.preferences["selected_card_id"]
+        val savedCardIdLong = when (rawSavedCardId) {
+            is Long -> rawSavedCardId
+            is Int -> rawSavedCardId.toLong()
+            is Double -> rawSavedCardId.toLong()
+            is String -> rawSavedCardId.toLongOrNull()
+            else -> null
+        }
+        val remappedSavedCardId = savedCardIdLong?.let { idMapping[it] ?: it }
+        val targetCard = (if (remappedSavedCardId != null) allCardsList.firstOrNull { it.id == remappedSavedCardId } else null)
+            ?: allCardsList.firstOrNull { it.isDefault }
+            ?: allCardsList.firstOrNull()
+
+        val savedSelectedPeriod = parsed.preferences["selected_period"]?.toString()?.trim()
+        val targetPeriod = when {
+            !savedSelectedPeriod.isNullOrBlank() && savedSelectedPeriod != "Todos los históricos" -> savedSelectedPeriod
+            targetCard != null -> {
+                val customPeriodsForCard = (reloadedRanges.keys + reloadedCutDates.keys + reloadedPaymentLimits.keys)
+                    .filter { it.startsWith("${targetCard.id}_") }
+                    .map { it.removePrefix("${targetCard.id}_") }
+                    .distinct()
+                val currentActive = getCurrentActivePeriod(targetCard)
+                if (currentActive in customPeriodsForCard) {
+                    currentActive
+                } else if (customPeriodsForCard.isNotEmpty()) {
+                    customPeriodsForCard.first()
+                } else {
+                    currentActive
+                }
+            }
+            else -> ""
+        }
+
+        if (targetCard != null) {
+            prefs.edit()
+                .putLong("selected_card_id", targetCard.id)
+                .putString("selected_period", targetPeriod)
+                .commit()
+        }
 
         val savedPin = prefs.getString("master_pin", "") ?: ""
         val isFirst = prefs.getBoolean("is_first_launch", true) || savedPin.isEmpty()
@@ -1193,7 +1304,7 @@ class CreditiaViewModel @JvmOverloads constructor(
             current.copy(
                 cards = allCardsList,
                 selectedCard = targetCard,
-                selectedPeriod = defaultPeriod,
+                selectedPeriod = targetPeriod,
                 currentTab = "consumos",
                 isSearchActive = false,
                 searchQuery = "",
@@ -1223,6 +1334,15 @@ class CreditiaViewModel @JvmOverloads constructor(
     fun exportDatabaseJson(): String {
         val cards = _uiState.value.cards
         val expenses = allExpenses.value
+        val currentCard = _uiState.value.selectedCard
+        val currentPeriod = _uiState.value.selectedPeriod
+        if (currentCard != null) {
+            prefs.edit().putLong("selected_card_id", currentCard.id).commit()
+        }
+        if (currentPeriod.isNotBlank()) {
+            prefs.edit().putString("selected_period", currentPeriod).commit()
+        }
+
         val json = JSONObject()
         json.put("app", "Creditia")
         json.put("version", 2)
@@ -1232,6 +1352,7 @@ class CreditiaViewModel @JvmOverloads constructor(
 
         // Exportar configuración completa de la aplicación (SharedPreferences)
         val prefsObj = JSONObject()
+        val customDatesObj = JSONObject()
         for ((key, value) in prefs.all) {
             when (value) {
                 is Boolean -> prefsObj.put(key, value)
@@ -1239,11 +1360,19 @@ class CreditiaViewModel @JvmOverloads constructor(
                 is Long -> prefsObj.put(key, value)
                 is Float -> prefsObj.put(key, value.toDouble())
                 is Double -> prefsObj.put(key, value)
-                is String -> prefsObj.put(key, value)
+                is String -> {
+                    prefsObj.put(key, value)
+                    if (key.startsWith("custom_cycle_range_") || key.startsWith("custom_cut_date_") || key.startsWith("custom_payment_limit_")) {
+                        customDatesObj.put(key, value)
+                    }
+                }
                 else -> if (value != null) prefsObj.put(key, value.toString())
             }
         }
         json.put("preferences", prefsObj)
+        json.put("custom_dates", customDatesObj)
+        if (currentCard != null) json.put("selected_card_id", currentCard.id)
+        if (currentPeriod.isNotBlank()) json.put("selected_period", currentPeriod)
 
         val logoPrefsObj = JSONObject()
         for ((key, value) in logoPrefs.all) {
@@ -1769,7 +1898,7 @@ class CreditiaViewModel @JvmOverloads constructor(
     fun getEffectiveCutDateForPeriod(card: CreditCardEntity?, periodName: String): String {
         if (card != null && periodName.isNotBlank() && periodName != "Todos los históricos") {
             val key = "${card.id}_${periodName}"
-            val custom = _uiState.value.customCutDates[key]
+            val custom = _uiState.value.customCutDates[key] ?: prefs.getString("custom_cut_date_$key", null)
             if (!custom.isNullOrBlank()) {
                 return custom
             }
@@ -1819,7 +1948,7 @@ class CreditiaViewModel @JvmOverloads constructor(
     fun getEffectivePaymentLimitDateForPeriod(card: CreditCardEntity?, periodName: String): String {
         if (card != null && periodName.isNotBlank() && periodName != "Todos los históricos") {
             val key = "${card.id}_${periodName}"
-            val custom = _uiState.value.customPaymentLimits[key]
+            val custom = _uiState.value.customPaymentLimits[key] ?: prefs.getString("custom_payment_limit_$key", null)
             if (!custom.isNullOrBlank()) {
                 return custom
             }
@@ -1892,12 +2021,24 @@ class CreditiaViewModel @JvmOverloads constructor(
             .filter { it.isNotBlank() && it != "Todos los históricos" && it != "Todos los periodos" }
             .distinct()
 
-        // Incluir siempre el periodo activo actual de la tarjeta
-        val allPeriods = if (currentActivePeriod.isNotBlank()) {
-            (expensePeriods + currentActivePeriod).distinct()
-        } else {
-            expensePeriods
-        }
+        // Periodos con fechas personalizadas para esta tarjeta (en memoria o guardados en SharedPreferences)
+        val customDatePeriods = if (card != null) {
+            val prefix = "${card.id}_"
+            val memoryPeriods = (_uiState.value.customCycleRanges.keys + _uiState.value.customCutDates.keys + _uiState.value.customPaymentLimits.keys)
+                .filter { it.startsWith(prefix) }
+                .map { it.removePrefix(prefix) }
+            val prefPeriods = prefs.all.keys
+                .filter { it.startsWith("custom_cycle_range_$prefix") || it.startsWith("custom_cut_date_$prefix") || it.startsWith("custom_payment_limit_$prefix") }
+                .map { it.substringAfter(prefix) }
+            (memoryPeriods + prefPeriods).filter { it.isNotBlank() && it != "Todos los históricos" && it != "Todos los periodos" }
+        } else emptyList()
+
+        val selectedPeriodItem = _uiState.value.selectedPeriod.takeIf { it.isNotBlank() && it != "Todos los históricos" && it != "Todos los periodos" }
+
+        // Incluir consumos, periodo activo, periodos con fechas personalizadas y el periodo actualmente seleccionado
+        val allPeriods = (expensePeriods + currentActivePeriod + customDatePeriods + listOfNotNull(selectedPeriodItem))
+            .filter { it.isNotBlank() }
+            .distinct()
 
         if (allPeriods.isEmpty()) {
             return listOf(currentActivePeriod)

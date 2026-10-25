@@ -164,11 +164,11 @@ fun ConsumosScreen(
     val currentActivePeriod = remember(selectedCard) {
         viewModel.getCurrentActivePeriod(selectedCard)
     }
-    val availablePeriods = remember(selectedCard, allExpenses) {
+    val availablePeriods = remember(selectedCard, allExpenses, uiState.selectedPeriod, uiState.customCycleRanges, uiState.customCutDates, uiState.customPaymentLimits) {
         viewModel.getAvailablePeriods(selectedCard, allExpenses)
     }
 
-    val selectedPeriod = if (uiState.selectedPeriod.isNotBlank() && uiState.selectedPeriod in availablePeriods) {
+    val selectedPeriod = if (uiState.selectedPeriod.isNotBlank()) {
         uiState.selectedPeriod
     } else if (currentActivePeriod in availablePeriods) {
         currentActivePeriod
