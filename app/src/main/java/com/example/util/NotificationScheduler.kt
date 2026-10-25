@@ -57,13 +57,17 @@ object NotificationScheduler {
 
         // Look ahead up to 12 months to find the first payment reminder date that is strictly in the future
         for (monthOffset in 0..12) {
-            val cutCal = Calendar.getInstance().apply {
+            val targetCal = Calendar.getInstance().apply {
                 set(Calendar.YEAR, currentYear)
                 set(Calendar.MONTH, currentMonth)
                 set(Calendar.DAY_OF_MONTH, 1)
                 add(Calendar.MONTH, monthOffset)
-                val maxDay = getActualMaximum(Calendar.DAY_OF_MONTH)
-                set(Calendar.DAY_OF_MONTH, card.cutDay.coerceIn(1, maxDay))
+            }
+            val cutCal = com.example.data.repository.CreditiaRepository.getCutCalendar(
+                targetCal.get(Calendar.YEAR),
+                targetCal.get(Calendar.MONTH),
+                card.cutDay
+            ).apply {
                 set(Calendar.HOUR_OF_DAY, 0)
                 set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0)
@@ -74,16 +78,8 @@ object NotificationScheduler {
             val cutYear = cutCal.get(Calendar.YEAR)
             val periodName = "${MONTH_NAMES[cutMonthIndex]} $cutYear"
 
-            // Compute payment limit date by adding business days (excluding Sat & Sun)
-            val payLimitCal = (cutCal.clone() as Calendar)
-            var remainingBusinessDays = card.payBusinessDays.coerceIn(1, 30)
-            while (remainingBusinessDays > 0) {
-                payLimitCal.add(Calendar.DAY_OF_MONTH, 1)
-                val dow = payLimitCal.get(Calendar.DAY_OF_WEEK)
-                if (dow != Calendar.SATURDAY && dow != Calendar.SUNDAY) {
-                    remainingBusinessDays--
-                }
-            }
+            // Compute payment limit date counting business days from effective cut date inclusive
+            val payLimitCal = com.example.data.repository.CreditiaRepository.calculateMaxPaymentCalendar(cutCal, card.payBusinessDays)
 
             val payDayNum = payLimitCal.get(Calendar.DAY_OF_MONTH)
             val payMonthNum = payLimitCal.get(Calendar.MONTH) + 1

@@ -103,6 +103,10 @@ object BackupUtil {
                 obj.put("dateString", e.dateString)
                 obj.put("billingPeriod", e.billingPeriod)
                 obj.put("deferredGroupId", e.deferredGroupId ?: "")
+                obj.put("transactionType", e.transactionType)
+                obj.put("transactionGroupId", e.transactionGroupId ?: "")
+                obj.put("transactionGroupName", e.transactionGroupName ?: "")
+                obj.put("establishmentLogoUrl", e.establishmentLogoUrl ?: "")
                 obj.put("timestamp", e.timestamp)
 
                 val receiptList = e.getReceiptUriList()
@@ -294,6 +298,9 @@ object BackupUtil {
             } else null
 
             val deferredGroupId = obj.optString("deferredGroupId", "").ifBlank { null }
+            val transactionType = obj.optString("transactionType", ExpenseEntity.TYPE_EXPENSE).ifBlank { ExpenseEntity.TYPE_EXPENSE }
+            val transactionGroupId = obj.optString("transactionGroupId", "").ifBlank { null }
+            val transactionGroupName = obj.optString("transactionGroupName", "").ifBlank { null }
 
             val expense = ExpenseEntity(
                 id = obj.optLong("id", 0L),
@@ -306,6 +313,10 @@ object BackupUtil {
                 billingPeriod = obj.optString("billingPeriod", "Octubre 2026"),
                 receiptUri = finalReceiptUri,
                 deferredGroupId = deferredGroupId,
+                transactionType = transactionType,
+                transactionGroupId = transactionGroupId,
+                transactionGroupName = transactionGroupName,
+                establishmentLogoUrl = obj.optString("establishmentLogoUrl", "").ifBlank { null },
                 timestamp = obj.optLong("timestamp", System.currentTimeMillis())
             )
             parsedExpenses.add(expense)

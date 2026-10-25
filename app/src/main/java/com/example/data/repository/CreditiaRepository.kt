@@ -38,7 +38,12 @@ class CreditiaRepository(
 
     suspend fun insertExpense(expense: ExpenseEntity): Long = expenseDao.insertExpense(expense)
 
-    suspend fun updateExpense(expense: ExpenseEntity) = expenseDao.updateExpense(expense)
+    suspend fun updateExpense(expense: ExpenseEntity) {
+        expenseDao.updateExpense(expense)
+        if (!expense.deferredGroupId.isNullOrBlank()) {
+            syncLogosForDeferredGroup(expense.deferredGroupId)
+        }
+    }
 
     /**
      * Updates an expense. If the expense is part of a deferred consumption group,
@@ -68,85 +73,180 @@ class CreditiaRepository(
             return 1
         }
 
-        // Sort group by installment number
-        val sortedGroup = group.sortedWith(
-            compareBy(
-                { it.getDeferredInfo()?.first ?: it.sequenceNumber },
-                { it.dateString }
-            )
-        )
+        // Separemos el grupo en notas de crédito, cuotas del diferido y consumos originales preservados
+        val creditNotes = group.filter { it.isCreditNote() || it.transactionType == ExpenseEntity.TYPE_CREDIT_NOTE }
+        val installments = group.filter { !it.isCreditNote() && !it.isPayment() && (it.getDeferredInfo() != null || it.description.contains(Regex("""\(Cuota\s*\d+/\d+\)"""))) }
+        val originalPreserved = group.filter { !it.isCreditNote() && !it.isPayment() && it.getDeferredInfo() == null && !it.description.contains(Regex("""\(Cuota\s*\d+/\d+\)""")) }
 
-        val sortedWithIndex = sortedGroup.mapIndexed { index, expense ->
-            val info = expense.getDeferredInfo()
-            val cuotaNum = info?.first ?: (index + 1)
-            val total = info?.second ?: sortedGroup.size
-            Triple(expense, cuotaNum, total)
+        // Si lo que se está editando directamente es la Nota de Crédito, se actualiza directamente sin alterar cuotas
+        if (updatedExpense.isCreditNote() || updatedExpense.transactionType == ExpenseEntity.TYPE_CREDIT_NOTE) {
+            expenseDao.updateExpense(updatedExpense)
+            return 1
         }
 
-        val targetTriple = sortedWithIndex.find { it.first.id == updatedExpense.id }
-        val editedCuota = targetTriple?.second ?: 1
-        val totalInstallments = sortedWithIndex.maxOfOrNull { it.third } ?: sortedGroup.size
-
-        val dateParts = updatedExpense.dateString.split("/")
-        val targetYear = dateParts.getOrNull(0)?.toIntOrNull() ?: 2026
-        val targetMonth = (dateParts.getOrNull(1)?.toIntOrNull() ?: 10) - 1 // 0-based
-        val targetDay = dateParts.getOrNull(2)?.toIntOrNull() ?: 1
-
-        val cleanBaseDesc = updatedExpense.description
-            .replace(Regex("""\s*\(Cuota\s*\d+/\d+\)\s*$"""), "")
-            .trim()
-        val updatedEstablishment = updatedExpense.establishment.ifBlank { "Consumo General" }
         val effectiveGroupId = updatedExpense.deferredGroupId
             ?: originalInDb?.deferredGroupId
-            ?: sortedGroup.firstNotNullOfOrNull { it.deferredGroupId }
+            ?: group.firstNotNullOfOrNull { it.deferredGroupId }
             ?: "def_${System.currentTimeMillis()}"
 
-        val toUpdate = sortedWithIndex.map { (installmentExpense, cuotaNum, _) ->
-            val monthOffset = cuotaNum - editedCuota
-            val cal = Calendar.getInstance()
-            cal.set(Calendar.YEAR, targetYear)
-            cal.set(Calendar.MONTH, targetMonth + monthOffset)
-            val maxDay = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
-            cal.set(Calendar.DAY_OF_MONTH, targetDay.coerceAtMost(maxDay))
-
-            val installmentDateStr = String.format(
-                Locale.US,
-                "%04d/%02d/%02d",
-                cal.get(Calendar.YEAR),
-                cal.get(Calendar.MONTH) + 1,
-                cal.get(Calendar.DAY_OF_MONTH)
+        // Caso A: Se está editando una cuota del diferido (o el grupo contiene cuotas)
+        val isEditingInstallment = updatedExpense.isDeferredInstallment() || installments.any { it.id == updatedExpense.id }
+        if (isEditingInstallment && installments.isNotEmpty()) {
+            // Sort ONLY the actual installments by installment number
+            val sortedInstallments = installments.sortedWith(
+                compareBy(
+                    { it.getDeferredInfo()?.first ?: it.sequenceNumber },
+                    { it.dateString }
+                )
             )
-            val installmentBillingPeriod = calculateBillingPeriod(installmentDateStr, cutDay)
-            val newDesc = if (cleanBaseDesc.isNotBlank()) {
-                "$cleanBaseDesc (Cuota $cuotaNum/$totalInstallments)"
-            } else {
-                "Consumo (Cuota $cuotaNum/$totalInstallments)"
+
+            val sortedWithIndex = sortedInstallments.mapIndexed { index, expense ->
+                val info = expense.getDeferredInfo()
+                val cuotaNum = info?.first ?: (index + 1)
+                val total = info?.second ?: sortedInstallments.size
+                Triple(expense, cuotaNum, total)
             }
 
-            if (installmentExpense.id == updatedExpense.id) {
-                updatedExpense.copy(
-                    dateString = installmentDateStr,
-                    billingPeriod = installmentBillingPeriod,
-                    establishment = updatedEstablishment,
-                    description = newDesc,
-                    cardId = updatedExpense.cardId,
-                    deferredGroupId = effectiveGroupId
+            val targetTriple = sortedWithIndex.find { it.first.id == updatedExpense.id }
+            val editedCuota = targetTriple?.second ?: (updatedExpense.getDeferredInfo()?.first ?: 1)
+            val totalInstallments = sortedWithIndex.maxOfOrNull { it.third } ?: sortedInstallments.size
+
+            val dateParts = updatedExpense.dateString.split("/")
+            val targetYear = dateParts.getOrNull(0)?.toIntOrNull() ?: 2026
+            val targetMonth = (dateParts.getOrNull(1)?.toIntOrNull() ?: 10) - 1 // 0-based
+            val targetDay = dateParts.getOrNull(2)?.toIntOrNull() ?: 1
+
+            val cleanBaseDesc = updatedExpense.description
+                .replace(Regex("""\s*\(Cuota\s*\d+/\d+\)\s*$"""), "")
+                .trim()
+            val updatedEstablishment = updatedExpense.establishment.ifBlank { "Consumo General" }
+
+            val toUpdateInstallments = sortedWithIndex.map { (installmentExpense, cuotaNum, _) ->
+                val monthOffset = cuotaNum - editedCuota
+                val cal = Calendar.getInstance()
+                cal.set(Calendar.YEAR, targetYear)
+                cal.set(Calendar.MONTH, targetMonth + monthOffset)
+                val maxDay = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+                cal.set(Calendar.DAY_OF_MONTH, targetDay.coerceAtMost(maxDay))
+
+                val installmentDateStr = String.format(
+                    Locale.US,
+                    "%04d/%02d/%02d",
+                    cal.get(Calendar.YEAR),
+                    cal.get(Calendar.MONTH) + 1,
+                    cal.get(Calendar.DAY_OF_MONTH)
                 )
-            } else {
-                installmentExpense.copy(
-                    dateString = installmentDateStr,
-                    billingPeriod = installmentBillingPeriod,
-                    establishment = updatedEstablishment,
-                    description = newDesc,
+                val installmentBillingPeriod = calculateBillingPeriod(installmentDateStr, cutDay)
+                val newDesc = if (cleanBaseDesc.isNotBlank()) {
+                    "$cleanBaseDesc (Cuota $cuotaNum/$totalInstallments)"
+                } else {
+                    "Consumo (Cuota $cuotaNum/$totalInstallments)"
+                }
+
+                if (installmentExpense.id == updatedExpense.id) {
+                    updatedExpense.copy(
+                        dateString = installmentDateStr,
+                        billingPeriod = installmentBillingPeriod,
+                        establishment = updatedEstablishment,
+                        description = newDesc,
+                        cardId = updatedExpense.cardId,
+                        deferredGroupId = effectiveGroupId,
+                        transactionType = ExpenseEntity.TYPE_EXPENSE,
+                        establishmentLogoUrl = updatedExpense.establishmentLogoUrl ?: installmentExpense.establishmentLogoUrl
+                    )
+                } else {
+                    installmentExpense.copy(
+                        dateString = installmentDateStr,
+                        billingPeriod = installmentBillingPeriod,
+                        establishment = updatedEstablishment,
+                        description = newDesc,
+                        cardId = updatedExpense.cardId,
+                        deferredGroupId = effectiveGroupId,
+                        transactionType = ExpenseEntity.TYPE_EXPENSE,
+                        receiptUri = updatedExpense.receiptUri ?: installmentExpense.receiptUri,
+                        establishmentLogoUrl = updatedExpense.establishmentLogoUrl ?: installmentExpense.establishmentLogoUrl
+                    )
+                }
+            }
+
+            toUpdateInstallments.forEach { expenseDao.updateExpense(it) }
+
+            val firstInstallment = toUpdateInstallments.first()
+            val newCreditNoteDate = firstInstallment.dateString
+            val newCreditNotePeriod = firstInstallment.billingPeriod
+
+            // SINCRONIZAR Y PRESERVAR NOTAS DE CRÉDITO:
+            // Al cambiar la fecha de una cuota diferida, también cambia la fecha de la nota de crédito
+            // generada por esa cuota, manteniéndose intacta como TYPE_CREDIT_NOTE.
+            creditNotes.forEach { cn ->
+                val preservedCn = cn.copy(
                     cardId = updatedExpense.cardId,
                     deferredGroupId = effectiveGroupId,
-                    receiptUri = updatedExpense.receiptUri ?: installmentExpense.receiptUri
+                    dateString = newCreditNoteDate,
+                    billingPeriod = newCreditNotePeriod,
+                    transactionType = ExpenseEntity.TYPE_CREDIT_NOTE,
+                    establishmentLogoUrl = updatedExpense.establishmentLogoUrl ?: cn.establishmentLogoUrl
                 )
+                expenseDao.updateExpense(preservedCn)
             }
-        }
 
-        toUpdate.forEach { expenseDao.updateExpense(it) }
-        return toUpdate.size
+            // Sincronizar también el consumo original preservado con esa misma fecha y periodo
+            // para que ambos continúen cancelándose en el mismo ciclo de facturación
+            originalPreserved.forEach { orig ->
+                if (orig.id != updatedExpense.id) {
+                    val preservedOrig = orig.copy(
+                        cardId = updatedExpense.cardId,
+                        deferredGroupId = effectiveGroupId,
+                        dateString = newCreditNoteDate,
+                        billingPeriod = newCreditNotePeriod,
+                        transactionType = ExpenseEntity.TYPE_EXPENSE,
+                        establishmentLogoUrl = updatedExpense.establishmentLogoUrl ?: orig.establishmentLogoUrl
+                    )
+                    expenseDao.updateExpense(preservedOrig)
+                }
+            }
+
+            return toUpdateInstallments.size
+        } else {
+            // Caso B: Se está editando el consumo original preservado
+            val updatedOrig = updatedExpense.copy(
+                cardId = updatedExpense.cardId,
+                deferredGroupId = effectiveGroupId,
+                billingPeriod = calculateBillingPeriod(updatedExpense.dateString, cutDay),
+                transactionType = ExpenseEntity.TYPE_EXPENSE
+            )
+            expenseDao.updateExpense(updatedOrig)
+
+            // Recolectar todos los logotipos de los consumos originales diferidos
+            val otherOriginals = originalPreserved.filter { it.id != updatedExpense.id }
+            val allOrigs = otherOriginals + updatedOrig
+            val distinctLogos = allOrigs.flatMap { it.getLogoUrls() }.distinct()
+            val combinedLogos = if (distinctLogos.isNotEmpty()) distinctLogos.joinToString("|") else null
+
+            // Sincronizar fecha, periodo y logotipos combinados de la Nota de Crédito
+            creditNotes.forEach { cn ->
+                val preservedCn = cn.copy(
+                    cardId = updatedExpense.cardId,
+                    deferredGroupId = effectiveGroupId,
+                    dateString = updatedExpense.dateString,
+                    billingPeriod = updatedOrig.billingPeriod,
+                    establishment = "Nota de Crédito - ${updatedExpense.establishment}",
+                    transactionType = ExpenseEntity.TYPE_CREDIT_NOTE,
+                    establishmentLogoUrl = combinedLogos ?: cn.establishmentLogoUrl
+                )
+                expenseDao.updateExpense(preservedCn)
+            }
+
+            // Sincronizar logotipos combinados en todas las cuotas del diferido consecuentes
+            installments.forEach { inst ->
+                val updatedInst = inst.copy(
+                    establishmentLogoUrl = combinedLogos ?: inst.establishmentLogoUrl
+                )
+                expenseDao.updateExpense(updatedInst)
+            }
+
+            return 1
+        }
     }
 
     suspend fun getExpenseById(id: Long): ExpenseEntity? = expenseDao.getExpenseById(id)
@@ -176,17 +276,35 @@ class CreditiaRepository(
      * Returns the number of expenses deleted.
      */
     suspend fun deleteExpenseWithCascade(target: ExpenseEntity): Int {
-        val groupExpenses = getDeferredInstallments(target)
+        val groupExpenses = if (!target.deferredGroupId.isNullOrBlank()) {
+            expenseDao.getExpensesByDeferredGroupId(target.deferredGroupId)
+        } else {
+            getDeferredInstallments(target)
+        }
+
         if (groupExpenses.size > 1) {
-            groupExpenses.mapNotNull { it.receiptUri }.distinct().forEach { uri ->
-                ReceiptStorageUtil.deleteReceiptFile(uri)
-            }
-            if (!target.deferredGroupId.isNullOrBlank()) {
-                expenseDao.deleteExpensesByDeferredGroupId(target.deferredGroupId)
+            val isTargetOriginal = target.isExpense() && !target.description.contains(Regex("""\(Cuota\s*\d+/\d+\)""")) && !target.isCreditNote()
+
+            groupExpenses.filter { it.id == target.id || it.isDeferredExpense() || it.isCreditNote() }
+                .mapNotNull { it.receiptUri }.distinct().forEach { uri ->
+                    ReceiptStorageUtil.deleteReceiptFile(uri)
+                }
+
+            if (isTargetOriginal) {
+                if (!target.deferredGroupId.isNullOrBlank()) {
+                    expenseDao.deleteExpensesByDeferredGroupId(target.deferredGroupId)
+                } else {
+                    groupExpenses.forEach { expenseDao.deleteExpense(it) }
+                }
+                return groupExpenses.size
             } else {
-                groupExpenses.forEach { expenseDao.deleteExpense(it) }
+                val toDelete = groupExpenses.filter { it.isCreditNote() || it.description.contains(Regex("""\(Cuota\s*\d+/\d+\)""")) }
+                val toRestore = groupExpenses.filter { !it.isCreditNote() && !it.description.contains(Regex("""\(Cuota\s*\d+/\d+\)""")) }
+
+                toDelete.forEach { expenseDao.deleteExpense(it) }
+                toRestore.forEach { expenseDao.updateExpense(it.copy(deferredGroupId = null)) }
+                return toDelete.size
             }
-            return groupExpenses.size
         } else {
             ReceiptStorageUtil.deleteReceiptFile(target.receiptUri)
             expenseDao.deleteExpense(target)
@@ -197,6 +315,17 @@ class CreditiaRepository(
     suspend fun deleteExpenseByIdCascade(id: Long): Int {
         val target = expenseDao.getExpenseById(id) ?: return 0
         return deleteExpenseWithCascade(target)
+    }
+
+    suspend fun groupExpenses(expenseIds: List<Long>, groupName: String? = null): String {
+        val groupId = "group_${System.currentTimeMillis()}"
+        val finalName = groupName?.trim()?.ifBlank { null }
+        expenseDao.updateTransactionGroup(expenseIds, groupId, finalName)
+        return groupId
+    }
+
+    suspend fun ungroupExpenses(groupId: String) {
+        expenseDao.clearTransactionGroup(groupId)
     }
 
     suspend fun clearAllData() {
@@ -211,11 +340,98 @@ class CreditiaRepository(
 
     suspend fun getExpenseCount(): Int = expenseDao.getExpenseCount()
 
+    companion object {
+        /**
+         * Retorna la fecha de corte para el mes y año dados.
+         * Regla 1:
+         * El día de corte de la tarjeta está determinado en la configuración (cutDay).
+         * Por ejemplo, si la tarjeta tiene configurado el día 24, el corte para octubre de 2026 es el 24 de octubre.
+         * Se acota únicamente al último día del mes en caso de meses con menos días (ej. 28 o 29 en febrero).
+         */
+        fun getCutCalendar(year: Int, monthIndex: Int, cutDay: Int): Calendar {
+            return Calendar.getInstance().apply {
+                set(Calendar.YEAR, year)
+                set(Calendar.MONTH, monthIndex)
+                val maxDay = getActualMaximum(Calendar.DAY_OF_MONTH)
+                set(Calendar.DAY_OF_MONTH, cutDay.coerceIn(1, maxDay))
+                set(Calendar.HOUR_OF_DAY, 12)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+        }
+
+        fun getCutDay(year: Int, monthIndex: Int, cutDay: Int): Int {
+            return getCutCalendar(year, monthIndex, cutDay).get(Calendar.DAY_OF_MONTH)
+        }
+
+        fun getEffectiveCutCalendar(year: Int, monthIndex: Int, nominalCutDay: Int): Calendar {
+            return getCutCalendar(year, monthIndex, nominalCutDay)
+        }
+
+        fun getEffectiveCutDay(year: Int, monthIndex: Int, nominalCutDay: Int): Int {
+            return getCutDay(year, monthIndex, nominalCutDay)
+        }
+
+        /**
+         * Calcula la fecha máxima de pago de la tarjeta para cada periodo.
+         * Regla 2:
+         * Se contabiliza el número de días establecido en la configuración de la tarjeta
+         * a partir del día de corte, contabilizando ÚNICAMENTE días de lunes a viernes (días hábiles).
+         *
+         * Ejemplo:
+         * Para el periodo de octubre 2026 con fecha de corte 24 de octubre y 12 días configurados:
+         * Se cuentan 12 días después del 24 de octubre de lunes a viernes:
+         * 1: Lun 26 oct, 2: Mar 27 oct, 3: Mié 28 oct, 4: Jue 29 oct, 5: Vie 30 oct,
+         * 6: Lun 2 nov, 7: Mar 3 nov, 8: Mié 4 nov, 9: Jue 5 nov, 10: Vie 6 nov,
+         * 11: Lun 9 nov, 12: Mar 10 nov.
+         * Fecha máxima de pago: Martes 10 de noviembre de 2026.
+         */
+        fun calculateMaxPaymentCalendar(
+            cutCal: Calendar,
+            payBusinessDays: Int
+        ): Calendar {
+            val cal = cutCal.clone() as Calendar
+            var daysCounted = 0
+            val targetDays = payBusinessDays.coerceAtLeast(1)
+            while (daysCounted < targetDays) {
+                cal.add(Calendar.DAY_OF_MONTH, 1)
+                val dow = cal.get(Calendar.DAY_OF_WEEK)
+                if (dow != Calendar.SATURDAY && dow != Calendar.SUNDAY) {
+                    daysCounted++
+                }
+            }
+            return cal
+        }
+
+        fun parsePeriodYearMonth(periodName: String): Pair<Int, Int> {
+            val monthNames = listOf(
+                "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+                "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"
+            )
+            val cal = Calendar.getInstance()
+            var targetYear = cal.get(Calendar.YEAR)
+            var targetMonth = cal.get(Calendar.MONTH)
+            val parts = periodName.trim().split(" ")
+            if (parts.size == 2) {
+                val mIdx = monthNames.indexOfFirst { it.equals(parts[0], ignoreCase = true) }
+                val yr = parts[1].toIntOrNull()
+                if (mIdx != -1 && yr != null) {
+                    targetYear = yr
+                    targetMonth = mIdx
+                }
+            }
+            return Pair(targetYear, targetMonth)
+        }
+    }
+
     /**
-     * Calculates the Billing Period name (e.g. "Octubre 2026") based on the transaction date (YYYY/MM/DD)
-     * and the credit card's cutoff day (cutDay).
-     * If the date's day is <= cutDay, the cycle ends in this month -> Period is current month.
-     * If the date's day is > cutDay, the cycle ends in next month -> Period is next month.
+     * Calcula el Periodo de Facturación (ej. "Octubre 2026") según la fecha de la transacción (YYYY/MM/DD)
+     * y el día de corte configurado de la tarjeta (cutDay).
+     * Regla 1:
+     * Si el día de la transacción es <= cutDay, pertenece al periodo del mes actual.
+     * Si el día de la transacción es > cutDay, pertenece al periodo del mes siguiente.
+     * Ejemplo: con corte día 24, el periodo de Octubre 2026 abarca desde el 25 de septiembre hasta el 24 de octubre.
      */
     fun calculateBillingPeriod(dateString: String, cutDay: Int): String {
         return try {
@@ -230,8 +446,12 @@ class CreditiaRepository(
                 cal.set(Calendar.MONTH, month - 1)
                 cal.set(Calendar.DAY_OF_MONTH, day)
 
-                if (day > cutDay) {
-                    // Falls into the following period
+                // El día de corte de la tarjeta está determinado en la configuración
+                val maxDay = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
+                val periodCutDay = cutDay.coerceIn(1, maxDay)
+
+                if (day > periodCutDay) {
+                    // Cae después del corte -> pertenece al siguiente periodo
                     cal.add(Calendar.MONTH, 1)
                 }
 
@@ -251,7 +471,10 @@ class CreditiaRepository(
     }
 
     /**
-     * Computes the billing cycle date range string, e.g. "2026/09/25 - 2026/10/24" for October 2026 period with cutDay 24.
+     * Calcula el rango de fechas de facturación para un periodo determinado.
+     * Regla 1:
+     * El rango va desde el día siguiente al corte del mes anterior hasta el día de corte de este periodo.
+     * Ejemplo: Para Octubre 2026 con corte 24, el rango es desde 25 de septiembre hasta 24 de octubre (2026/09/25 - 2026/10/24).
      */
     fun getBillingCycleRange(periodName: String, cutDay: Int): String {
         return try {
@@ -265,19 +488,16 @@ class CreditiaRepository(
                 )
                 val monthIndex = monthNames.indexOf(monthName)
                 if (monthIndex != -1) {
-                    val endCal = Calendar.getInstance().apply {
-                        set(Calendar.YEAR, year)
-                        set(Calendar.MONTH, monthIndex)
-                        val maxDay = getActualMaximum(Calendar.DAY_OF_MONTH)
-                        set(Calendar.DAY_OF_MONTH, cutDay.coerceAtMost(maxDay))
-                    }
+                    val endCal = getCutCalendar(year, monthIndex, cutDay)
 
-                    val startCal = Calendar.getInstance().apply {
+                    val prevMonthCal = Calendar.getInstance().apply {
                         timeInMillis = endCal.timeInMillis
                         add(Calendar.MONTH, -1)
-                        val maxDay = getActualMaximum(Calendar.DAY_OF_MONTH)
-                        val startDay = (cutDay + 1).coerceAtMost(maxDay)
-                        set(Calendar.DAY_OF_MONTH, startDay)
+                    }
+                    val prevCut = getCutCalendar(prevMonthCal.get(Calendar.YEAR), prevMonthCal.get(Calendar.MONTH), cutDay)
+                    val startCal = Calendar.getInstance().apply {
+                        timeInMillis = prevCut.timeInMillis
+                        add(Calendar.DAY_OF_MONTH, 1)
                     }
 
                     val sdf = SimpleDateFormat("yyyy/MM/dd", Locale.US)
@@ -349,9 +569,8 @@ class CreditiaRepository(
 
     /**
      * Defers an existing expense into multiple monthly installments.
-     * Updates the original expense to become Installment 1, and generates
-     * subsequent installments (2..N) with consecutive sequence numbers and
-     * corresponding billing periods.
+     * Conserva el registro del consumo original y crea un registro de Nota de Crédito
+     * para que al restarse se anulen, dejando vigentes las N cuotas calculadas.
      */
     suspend fun deferExpense(
         originalExpense: ExpenseEntity,
@@ -367,29 +586,37 @@ class CreditiaRepository(
             cutDay = cutDay
         )
 
-        // Clean base description (strip any previous "(Cuota X/Y)")
         val baseDescription = originalExpense.description.replace(Regex("\\s*\\(Cuota\\s*\\d+/\\d+\\)"), "").trim()
         val baseEstablishment = originalExpense.establishment
         val groupId = "def_${System.currentTimeMillis()}_${originalExpense.id}"
+        val allLogos = originalExpense.getLogoUrls()
+        val combinedLogos = if (allLogos.isNotEmpty()) allLogos.joinToString("|") else null
 
-        // 1. Update original expense as Cuota 1
-        val firstPlan = plan[0]
-        val updatedExpense1 = originalExpense.copy(
-            amount = firstPlan.amount,
-            description = if (baseDescription.isNotBlank()) "$baseDescription (Cuota 1/$months)" else "Consumo (Cuota 1/$months)",
-            billingPeriod = firstPlan.billingPeriod,
-            dateString = firstPlan.dateString,
-            deferredGroupId = groupId
-        )
-        expenseDao.updateExpense(updatedExpense1)
+        // 1. Conservar el consumo original vinculándolo al grupo diferido
+        val preservedOriginal = originalExpense.copy(deferredGroupId = groupId)
+        expenseDao.updateExpense(preservedOriginal)
 
-        val resultList = mutableListOf(updatedExpense1)
-
-        // 2. Insert installments 2..N
+        // 2. Crear registro total de Nota de Crédito para anular el consumo diferido
         var currentSeq = getNextSequenceNumber()
-        val newExpenses = mutableListOf<ExpenseEntity>()
+        val notaCredito = ExpenseEntity(
+            sequenceNumber = currentSeq++,
+            cardId = originalExpense.cardId,
+            establishment = "Nota de Crédito - $baseEstablishment",
+            description = "Anulación por diferido a $months cuotas",
+            amount = originalExpense.amount,
+            dateString = originalExpense.dateString,
+            billingPeriod = originalExpense.billingPeriod,
+            receiptUri = originalExpense.receiptUri,
+            deferredGroupId = groupId,
+            establishmentLogoUrl = combinedLogos,
+            transactionType = ExpenseEntity.TYPE_CREDIT_NOTE,
+            timestamp = System.currentTimeMillis()
+        )
+        expenseDao.insertExpense(notaCredito)
 
-        for (k in 2..months) {
+        // 3. Generar cuotas 1..N
+        val newInstallments = mutableListOf<ExpenseEntity>()
+        for (k in 1..months) {
             val itemPlan = plan[k - 1]
             val newExpense = ExpenseEntity(
                 sequenceNumber = currentSeq++,
@@ -401,23 +628,25 @@ class CreditiaRepository(
                 billingPeriod = itemPlan.billingPeriod,
                 receiptUri = originalExpense.receiptUri,
                 deferredGroupId = groupId,
+                establishmentLogoUrl = combinedLogos,
+                transactionType = ExpenseEntity.TYPE_EXPENSE,
                 timestamp = System.currentTimeMillis() + k
             )
-            newExpenses.add(newExpense)
-            resultList.add(newExpense)
+            newInstallments.add(newExpense)
         }
 
-        if (newExpenses.isNotEmpty()) {
-            expenseDao.insertExpenses(newExpenses)
+        if (newInstallments.isNotEmpty()) {
+            expenseDao.insertExpenses(newInstallments)
         }
 
-        return resultList
+        return listOf(preservedOriginal, notaCredito) + newInstallments
     }
 
     /**
      * Consolidates multiple selected expenses into a single deferred installment plan.
-     * Calculates the sum of all selected expenses, deletes the individual original expenses,
-     * and generates a unified schedule of N installments with a shared deferredGroupId.
+     * Conserva los registros de los consumos individuales seleccionados y crea un registro total
+     * de Nota de Crédito por la sumatoria para que al restarse se anulen, generando las N cuotas unificadas.
+     * Almacena todos los logotipos de los consumos seleccionados en las cuotas y en la nota de crédito.
      */
     suspend fun deferMultipleExpenses(
         selectedExpenses: List<ExpenseEntity>,
@@ -453,6 +682,43 @@ class CreditiaRepository(
             .distinct()
         val sharedReceipt = if (allReceiptUris.isNotEmpty()) allReceiptUris.joinToString("|") else null
 
+        // Todos los logotipos de los consumos seleccionados para diferir
+        val allLogos = selectedExpenses
+            .flatMap { it.getLogoUrls() }
+            .distinct()
+        val combinedLogos = if (allLogos.isNotEmpty()) allLogos.joinToString("|") else null
+
+        // 1. Conservar los registros individuales originales vinculándolos al deferredGroupId
+        // Cada consumo original conserva su propio logo intacto
+        selectedExpenses.forEach { exp ->
+            expenseDao.updateExpense(
+                exp.copy(
+                    deferredGroupId = groupId
+                )
+            )
+        }
+
+        // 2. Crear un registro total de Nota de Crédito por el monto total diferido
+        // Debe contener todos los logotipos de los consumos seleccionados para diferir
+        val latestBillingPeriod = calculateBillingPeriod(latestDate, cutDay)
+        val notaCredito = ExpenseEntity(
+            sequenceNumber = currentSeq++,
+            cardId = cardId,
+            establishment = "Nota de Crédito - $combinedEstablishment",
+            description = "Anulación por diferido unificado (${selectedExpenses.size} consumos a $months cuotas)",
+            amount = totalAmount,
+            dateString = latestDate,
+            billingPeriod = latestBillingPeriod,
+            deferredGroupId = groupId,
+            receiptUri = sharedReceipt,
+            establishmentLogoUrl = combinedLogos,
+            transactionType = ExpenseEntity.TYPE_CREDIT_NOTE,
+            timestamp = System.currentTimeMillis()
+        )
+        expenseDao.insertExpense(notaCredito)
+
+        // 3. Generar cuotas 1..N
+        // Cada cuota nueva debe contener todos los logotipos de los consumos seleccionados para diferir
         val newInstallments = plan.mapIndexed { index, itemPlan ->
             val k = index + 1
             ExpenseEntity(
@@ -465,16 +731,121 @@ class CreditiaRepository(
                 billingPeriod = itemPlan.billingPeriod,
                 deferredGroupId = groupId,
                 receiptUri = sharedReceipt,
+                establishmentLogoUrl = combinedLogos,
+                transactionType = ExpenseEntity.TYPE_EXPENSE,
                 timestamp = System.currentTimeMillis() + k
             )
         }
 
-        // Delete the individual original records
-        selectedExpenses.forEach { expenseDao.deleteExpense(it) }
-
-        // Insert the unified installment schedule
         expenseDao.insertExpenses(newInstallments)
 
+        return listOf(notaCredito) + newInstallments
+    }
+
+    /**
+     * Registra directamente una compra diferida en N cuotas mensuales desde "+ Registrar"
+     * SIN generar nota de crédito ni registro previo, creando únicamente las cuotas activas en amarillo.
+     */
+    suspend fun createDirectDeferred(
+        cardId: Long,
+        totalAmount: Double,
+        establishment: String,
+        description: String,
+        startDateString: String,
+        months: Int,
+        monthlyInterestRate: Double,
+        receiptUri: String?,
+        cutDay: Int,
+        establishmentLogoUrl: String? = null
+    ): List<ExpenseEntity> {
+        val plan = calculateInstallmentPlan(
+            amount = totalAmount,
+            months = months,
+            monthlyInterestRate = monthlyInterestRate,
+            startDateString = startDateString,
+            cutDay = cutDay
+        )
+
+        val cleanDesc = description.ifBlank { "Consumo diferido" }
+        val baseEst = establishment.ifBlank { "Consumo General" }
+        val groupId = "def_direct_${System.currentTimeMillis()}"
+        var currentSeq = getNextSequenceNumber()
+
+        val newInstallments = plan.mapIndexed { index, itemPlan ->
+            val k = index + 1
+            ExpenseEntity(
+                sequenceNumber = currentSeq++,
+                cardId = cardId,
+                establishment = baseEst,
+                description = "$cleanDesc (Cuota $k/$months)",
+                amount = itemPlan.amount,
+                dateString = itemPlan.dateString,
+                billingPeriod = itemPlan.billingPeriod,
+                deferredGroupId = groupId,
+                receiptUri = receiptUri,
+                establishmentLogoUrl = establishmentLogoUrl,
+                transactionType = ExpenseEntity.TYPE_EXPENSE,
+                timestamp = System.currentTimeMillis() + k
+            )
+        }
+
+        expenseDao.insertExpenses(newInstallments)
         return newInstallments
+    }
+
+    /**
+     * Sincroniza y propaga los logotipos agregados a los consumos originales
+     * hacia todas las cuotas diferidas y hacia la nota de crédito del grupo.
+     * Recolecta todos los logotipos únicos de los consumos originales diferidos
+     * y los concatena con '|' para que se reflejen fielmente en las cuotas y en la nota de crédito.
+     */
+    suspend fun syncLogosForDeferredGroup(deferredGroupId: String): Int {
+        if (deferredGroupId.isBlank()) return 0
+        val group = expenseDao.getExpensesByDeferredGroupId(deferredGroupId)
+        if (group.isEmpty()) return 0
+
+        // Consumos originales que conformaron este diferido (no son cuotas ni notas de crédito)
+        val originals = group.filter { !it.isCreditNote() && !it.isPayment() && !it.isDeferredInstallment() }
+        val creditNotes = group.filter { it.isCreditNote() }
+        val installments = group.filter { it.isDeferredInstallment() }
+
+        // Si existen consumos originales, tomamos todos los logos distintos de todos los consumos originales
+        val combinedLogos = if (originals.isNotEmpty()) {
+            val distinctLogos = originals.flatMap { it.getLogoUrls() }.distinct()
+            if (distinctLogos.isNotEmpty()) distinctLogos.joinToString("|") else null
+        } else {
+            // Si es un diferido directo sin consumo original previo, mantenemos los logos existentes de las cuotas
+            val distinctLogos = installments.flatMap { it.getLogoUrls() }.distinct()
+            if (distinctLogos.isNotEmpty()) distinctLogos.joinToString("|") else null
+        }
+
+        var updatedCount = 0
+        // Actualizar cuotas
+        installments.forEach { inst ->
+            if (inst.establishmentLogoUrl != combinedLogos) {
+                expenseDao.updateExpense(inst.copy(establishmentLogoUrl = combinedLogos))
+                updatedCount++
+            }
+        }
+
+        // Actualizar notas de crédito
+        creditNotes.forEach { cn ->
+            if (cn.establishmentLogoUrl != combinedLogos) {
+                expenseDao.updateExpense(cn.copy(establishmentLogoUrl = combinedLogos))
+                updatedCount++
+            }
+        }
+
+        return updatedCount
+    }
+
+    suspend fun updateLogoForDeferredGroup(deferredGroupId: String, logoUrl: String?): Int {
+        val count = expenseDao.updateLogoByDeferredGroupId(deferredGroupId, logoUrl)
+        syncLogosForDeferredGroup(deferredGroupId)
+        return count
+    }
+
+    suspend fun updateLogoForEstablishment(establishment: String, logoUrl: String?): Int {
+        return expenseDao.updateLogoByEstablishment(establishment, logoUrl)
     }
 }

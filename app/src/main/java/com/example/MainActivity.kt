@@ -79,11 +79,18 @@ fun CreditiaApp(viewModel: CreditiaViewModel = viewModel()) {
     }
 
     val currentTitle = when {
-        isAddingNewExpense -> if (uiState.editingExpense != null) "Editar Consumo" else "Nuevo Consumo"
-        uiState.currentTab == "consumos" -> "Consumos"
+        isAddingNewExpense -> {
+            val editing = uiState.editingExpense
+            if (editing != null) {
+                if (editing.isPayment()) "Editar Pago a Tarjeta" else "Editar Consumo"
+            } else {
+                "Nuevo Consumo / Pago"
+            }
+        }
+        uiState.currentTab == "consumos" -> "Consumos y Pagos"
         uiState.currentTab == "tarjetas" -> "Tarjetas"
         uiState.currentTab == "ajustes" -> "Ajustes"
-        else -> "Consumos"
+        else -> "Consumos y Pagos"
     }
 
     val isLocked = uiState.isFirstLaunch || !uiState.isVaultUnlocked

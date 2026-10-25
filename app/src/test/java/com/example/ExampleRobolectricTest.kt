@@ -267,4 +267,63 @@ class ExampleRobolectricTest {
 
     db.close()
   }
+
+  @Test
+  fun `test custom billing cycle range override and reset`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val vm = com.example.ui.viewmodel.CreditiaViewModel(app)
+
+    val cardId = 1L
+    val period = "Octubre 2026"
+    val cutDay = 24
+
+    // Default calculado por fórmula (desde el día siguiente al corte anterior hasta el corte actual)
+    val defaultRange = vm.getBillingCycleRange(cardId, period, cutDay)
+    assertEquals("2026/09/25 - 2026/10/24", defaultRange)
+    org.junit.Assert.assertNull(vm.getCustomBillingCycleRange(cardId, period))
+
+    // Sobrescribir rango manualmente
+    val customRange = "2026/09/20 - 2026/10/25"
+    vm.setCustomBillingCycleRange(cardId, period, customRange)
+
+    assertEquals(customRange, vm.getBillingCycleRange(cardId, period, cutDay))
+    assertEquals(customRange, vm.getCustomBillingCycleRange(cardId, period))
+
+    // Restablecer cálculo automático
+    vm.setCustomBillingCycleRange(cardId, period, null)
+    assertEquals(defaultRange, vm.getBillingCycleRange(cardId, period, cutDay))
+    org.junit.Assert.assertNull(vm.getCustomBillingCycleRange(cardId, period))
+  }
+
+  @Test
+  fun `test selection mode and multi select on expense toggle`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    val vm = com.example.ui.viewmodel.CreditiaViewModel(app)
+
+    org.junit.Assert.assertFalse(vm.uiState.value.isSelectionMode)
+    org.junit.Assert.assertTrue(vm.uiState.value.selectedExpenseIds.isEmpty())
+
+    // Long press o toggle sobre registro 101 activa modo selección
+    vm.toggleExpenseSelection(101L)
+    org.junit.Assert.assertTrue(vm.uiState.value.isSelectionMode)
+    org.junit.Assert.assertTrue(vm.uiState.value.selectedExpenseIds.contains(101L))
+
+    // Seleccionar registro 102 adicional (multi-selección)
+    vm.toggleExpenseSelection(102L)
+    assertEquals(2, vm.uiState.value.selectedExpenseIds.size)
+    org.junit.Assert.assertTrue(vm.uiState.value.selectedExpenseIds.contains(101L))
+    org.junit.Assert.assertTrue(vm.uiState.value.selectedExpenseIds.contains(102L))
+
+    // Deseleccionar 101L
+    vm.toggleExpenseSelection(101L)
+    assertEquals(1, vm.uiState.value.selectedExpenseIds.size)
+    org.junit.Assert.assertTrue(vm.uiState.value.selectedExpenseIds.contains(102L))
+    org.junit.Assert.assertTrue(vm.uiState.value.isSelectionMode)
+
+    // Deseleccionar el último registro desactiva modo selección
+    vm.toggleExpenseSelection(102L)
+    org.junit.Assert.assertFalse(vm.uiState.value.isSelectionMode)
+    org.junit.Assert.assertTrue(vm.uiState.value.selectedExpenseIds.isEmpty())
+  }
 }
+

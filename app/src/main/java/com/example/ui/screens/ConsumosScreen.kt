@@ -29,6 +29,9 @@ import androidx.compose.material.icons.filled.ZoomIn
 import coil.compose.AsyncImage
 import com.example.ui.components.ReceiptViewerDialog
 import com.example.ui.components.DiferirConsumoDialog
+import com.example.ui.components.LogoSearchDialog
+import com.example.ui.components.EditBillingCycleRangeDialog
+import androidx.compose.material.icons.filled.AutoAwesome
 import java.io.File
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -180,16 +183,19 @@ fun ConsumosScreen(
     } else 0.0
 
     val daysUntilCut = selectedCard?.let { viewModel.getDaysUntilCut(it.cutDay) } ?: 4
+    val periodCutDate = selectedCard?.let {
+        viewModel.getCutDateForPeriod(it, selectedPeriod)
+    } ?: "Sáb 24/10/2026"
     val paymentLimitDate = selectedCard?.let {
         viewModel.getPaymentLimitDateForPeriod(it, selectedPeriod)
-    } ?: "10/11/2026"
+    } ?: "Mar 10/11/2026"
     val cycleRange = if (!uiState.selectedExactDate.isNullOrBlank()) {
         "Transacciones del ${uiState.selectedExactDate}"
     } else if (selectedPeriod == "Todos los históricos") {
         "Historial completo de consumos"
     } else {
         selectedCard?.let {
-            viewModel.repository.getBillingCycleRange(selectedPeriod, it.cutDay)
+            viewModel.getBillingCycleRange(it.id, selectedPeriod, it.cutDay)
         } ?: "Periodo actual"
     }
 
@@ -203,6 +209,8 @@ fun ConsumosScreen(
     val selectedExpenseIds = uiState.selectedExpenseIds
     val isSelectionMode = uiState.isSelectionMode
     var showMultiDeferDialog by remember { mutableStateOf(false) }
+    var showEditCycleRangeDialog by remember { mutableStateOf(false) }
+    var targetPeriodToEdit by remember { mutableStateOf<String?>(null) }
 
     Box(
         modifier = modifier
@@ -376,6 +384,7 @@ fun ConsumosScreen(
                                         CardMiniGraphic(
                                             card = card,
                                             isSelected = isCurrent,
+                                            periodName = selectedPeriod,
                                             onClick = {
                                                 viewModel.selectCard(card)
                                                 showCardDropdown = false
@@ -514,8 +523,8 @@ fun ConsumosScreen(
                                             modifier = Modifier.size(14.dp)
                                         )
                                         Text(
-                                            text = "Corte: Día ${String.format(Locale.US, "%02d", selectedCard.cutDay)}",
-                                            fontSize = 12.sp,
+                                            text = "Corte: $periodCutDate",
+                                            fontSize = 11.5.sp,
                                             fontWeight = FontWeight.SemiBold,
                                             color = if (isMaster) Color(0xFFFCD34D) else Color(0xFF6FFBBE)
                                         )
@@ -523,10 +532,45 @@ fun ConsumosScreen(
 
                                     Text(
                                         text = "Pago: $paymentLimitDate",
-                                        fontSize = 12.sp,
+                                        fontSize = 11.5.sp,
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White
                                     )
+                                }
+
+                                if (selectedPeriod != "Todos los históricos") {
+                                    val isCustomRange = selectedCard?.let { viewModel.getCustomBillingCycleRange(it.id, selectedPeriod) != null } ?: false
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (isCustomRange) Color(0xFFFCD34D).copy(alpha = 0.2f) else Color.White.copy(alpha = 0.15f),
+                                        border = BorderStroke(1.dp, if (isCustomRange) Color(0xFFFCD34D) else Color.White.copy(alpha = 0.3f)),
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .clickable {
+                                                targetPeriodToEdit = selectedPeriod
+                                                showEditCycleRangeDialog = true
+                                            }
+                                            .testTag("clickable_cycle_range_card")
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "Facturación: $cycleRange",
+                                                fontSize = 10.5.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = if (isCustomRange) Color(0xFFFCD34D) else Color.White
+                                            )
+                                            Icon(
+                                                imageVector = Icons.Default.Edit,
+                                                contentDescription = "Editar rango de facturación",
+                                                tint = if (isCustomRange) Color(0xFFFCD34D) else Color.White.copy(alpha = 0.85f),
+                                                modifier = Modifier.size(11.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -690,15 +734,38 @@ fun ConsumosScreen(
                                                 }
                                             }
                                         }
-                                        Text(
-                                            text = if (uiState.selectedExactDate.isNullOrBlank()) {
-                                                if (selectedPeriod == "Todos los históricos") "Historial completo de consumos" else "Ciclo: $cycleRange"
-                                            } else {
-                                                "Filtro por día específico"
-                                            },
-                                            fontSize = 12.sp,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(4.dp))
+                                                .let {
+                                                    if (selectedPeriod != "Todos los históricos" && uiState.selectedExactDate.isNullOrBlank()) {
+                                                        it.clickable {
+                                                            targetPeriodToEdit = selectedPeriod
+                                                            showEditCycleRangeDialog = true
+                                                        }
+                                                    } else it
+                                                }
+                                        ) {
+                                            Text(
+                                                text = if (uiState.selectedExactDate.isNullOrBlank()) {
+                                                    if (selectedPeriod == "Todos los históricos") "Historial completo de consumos" else "Ciclo: $cycleRange"
+                                                } else {
+                                                    "Filtro por día específico"
+                                                },
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (selectedPeriod != "Todos los históricos" && uiState.selectedExactDate.isNullOrBlank()) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Edit,
+                                                    contentDescription = "Editar rango de facturación",
+                                                    tint = CreditiaPrimary,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
 
@@ -1253,6 +1320,9 @@ fun ConsumosScreen(
                             onToggleSelect = {
                                 viewModel.toggleExpenseSelection(expense.id)
                             },
+                            onLongPress = {
+                                viewModel.toggleExpenseSelection(expense.id)
+                            },
                             onEdit = {
                                 viewModel.startEditExpense(expense)
                                 onNavigateToNewExpense()
@@ -1550,6 +1620,7 @@ fun ConsumosScreen(
                             CardMiniGraphic(
                                 card = card,
                                 isSelected = isCurrent,
+                                periodName = selectedPeriod,
                                 onClick = {
                                     viewModel.selectCard(card)
                                     showCardDropdown = false
@@ -1655,9 +1726,10 @@ fun ConsumosScreen(
                             "Historial consolidado de todas las compras"
                         } else {
                             selectedCard?.let {
-                                viewModel.repository.getBillingCycleRange(period, it.cutDay)
+                                viewModel.getBillingCycleRange(it.id, period, it.cutDay)
                             } ?: ""
                         }
+                        val isOverridden = selectedCard?.let { viewModel.getCustomBillingCycleRange(it.id, period) != null } ?: false
 
                         Card(
                             shape = RoundedCornerShape(12.dp),
@@ -1733,11 +1805,49 @@ fun ConsumosScreen(
                                             }
                                         }
                                         if (periodDates.isNotBlank()) {
-                                            Text(
-                                                text = periodDates,
-                                                fontSize = 11.sp,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .let {
+                                                        if (period != "Todos los históricos") {
+                                                            it.clickable {
+                                                                targetPeriodToEdit = period
+                                                                showEditCycleRangeDialog = true
+                                                            }
+                                                        } else it
+                                                    }
+                                            ) {
+                                                Text(
+                                                    text = periodDates,
+                                                    fontSize = 11.sp,
+                                                    color = if (isOverridden) CreditiaPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    fontWeight = if (isOverridden) FontWeight.SemiBold else FontWeight.Normal
+                                                )
+                                                if (period != "Todos los históricos") {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Edit,
+                                                        contentDescription = "Editar fecha de facturación",
+                                                        tint = if (isOverridden) CreditiaPrimary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                                        modifier = Modifier.size(12.dp)
+                                                    )
+                                                    if (isOverridden) {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(3.dp),
+                                                            color = CreditiaPrimary.copy(alpha = 0.12f)
+                                                        ) {
+                                                            Text(
+                                                                text = "Editado",
+                                                                fontSize = 8.5.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = CreditiaPrimary,
+                                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1770,6 +1880,54 @@ fun ConsumosScreen(
             onDismiss = { viewingReceiptUri = null }
         )
     }
+
+    // Modal de Búsqueda y Selección de Logotipos en Internet
+    if (uiState.isLogoSearchModalOpen && uiState.logoTargetExpense != null) {
+        LogoSearchDialog(
+            expense = uiState.logoTargetExpense!!,
+            searchQuery = uiState.logoSearchQuery,
+            isSearching = uiState.isSearchingLogos,
+            candidates = uiState.logoSearchResults,
+            errorMessage = uiState.logoSearchError,
+            isApplying = uiState.isApplyingLogo,
+            onQueryChange = { viewModel.onLogoSearchQueryChange(it) },
+            onSearch = { viewModel.searchLogos(it) },
+            onSelectCandidate = { candidate -> viewModel.selectAndApplyLogo(candidate) },
+            onApplyDirectUrlOrUri = { uri -> viewModel.applyLogoFromUrlOrUri(uri) },
+            onRemoveLogo = { exp -> viewModel.removeEstablishmentLogo(exp) },
+            onDismiss = { viewModel.closeLogoSearchModal() }
+        )
+    }
+
+    // Diálogo para editar y sobrescribir el rango de fecha de facturación
+    if (showEditCycleRangeDialog && targetPeriodToEdit != null && selectedCard != null) {
+        val pToEdit = targetPeriodToEdit!!
+        val curRange = viewModel.getBillingCycleRange(selectedCard.id, pToEdit, selectedCard.cutDay)
+        val calcRange = viewModel.repository.getBillingCycleRange(pToEdit, selectedCard.cutDay)
+        val isOver = viewModel.getCustomBillingCycleRange(selectedCard.id, pToEdit) != null
+
+        EditBillingCycleRangeDialog(
+            periodName = pToEdit,
+            cardName = selectedCard.cardName,
+            currentRange = curRange,
+            calculatedRange = calcRange,
+            isOverridden = isOver,
+            onDismiss = {
+                showEditCycleRangeDialog = false
+                targetPeriodToEdit = null
+            },
+            onSaveRange = { newRange ->
+                viewModel.setCustomBillingCycleRange(selectedCard.id, pToEdit, newRange)
+                showEditCycleRangeDialog = false
+                targetPeriodToEdit = null
+            },
+            onResetToCalculated = {
+                viewModel.setCustomBillingCycleRange(selectedCard.id, pToEdit, null)
+                showEditCycleRangeDialog = false
+                targetPeriodToEdit = null
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1779,6 +1937,7 @@ fun ExpenseCardItem(
     isSelected: Boolean = false,
     isSelectionMode: Boolean = false,
     onToggleSelect: () -> Unit = {},
+    onLongPress: (() -> Unit)? = null,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     onReceiptClick: ((receiptUri: String, title: String, subtitle: String) -> Unit)? = null,
@@ -1803,7 +1962,11 @@ fun ExpenseCardItem(
                     }
                 },
                 onLongClick = {
-                    onToggleSelect()
+                    if (isSelectionMode) {
+                        onToggleSelect()
+                    } else {
+                        onLongPress?.invoke()
+                    }
                 }
             )
             .testTag("expense_card_${expense.id}")
@@ -1845,6 +2008,41 @@ fun ExpenseCardItem(
                                     tint = Color.White,
                                     modifier = Modifier.size(15.dp)
                                 )
+                            }
+                        }
+                    }
+
+                    // Logotipo(s) del Comercio (soporta diferidos unificados)
+                    val logoUrls = remember(expense.establishmentLogoUrl) { expense.getLogoUrls() }
+                    if (logoUrls.isNotEmpty()) {
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy((-8).dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            logoUrls.take(3).forEach { logoUrl ->
+                                val logoModel: Any = if (logoUrl.startsWith("/") || logoUrl.startsWith("file://")) {
+                                    File(logoUrl.removePrefix("file://"))
+                                } else {
+                                    logoUrl
+                                }
+                                Surface(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape),
+                                    shape = CircleShape,
+                                    color = Color.White,
+                                    shadowElevation = 2.dp,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                                ) {
+                                    AsyncImage(
+                                        model = logoModel,
+                                        contentDescription = "Logo de ${expense.establishment}",
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(4.dp)
+                                    )
+                                }
                             }
                         }
                     }

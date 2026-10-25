@@ -1,5 +1,10 @@
 package com.example.ui.components
 
+import android.app.DatePickerDialog
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.EditCalendar
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxSize
@@ -223,6 +228,7 @@ fun CardNetworkLogo(
 fun CardMiniGraphic(
     card: CreditCardEntity,
     isSelected: Boolean = false,
+    periodName: String? = null,
     modifier: Modifier = Modifier,
     onClick: (() -> Unit)? = null
 ) {
@@ -324,8 +330,19 @@ fun CardMiniGraphic(
                         color = Color.White.copy(alpha = 0.95f)
                     )
 
+                    val cutDisplay = if (!periodName.isNullOrBlank() && periodName != "Todos los históricos") {
+                        val (year, month) = com.example.data.repository.CreditiaRepository.parsePeriodYearMonth(periodName)
+                        val cutCal = com.example.data.repository.CreditiaRepository.getCutCalendar(year, month, card.cutDay)
+                        val dayNames = listOf("", "Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb")
+                        val dow = dayNames.getOrElse(cutCal.get(Calendar.DAY_OF_WEEK)) { "" }
+                        val day = String.format(java.util.Locale.US, "%02d", cutCal.get(Calendar.DAY_OF_MONTH))
+                        val mNum = String.format(java.util.Locale.US, "%02d", cutCal.get(Calendar.MONTH) + 1)
+                        "Corte: $dow $day/$mNum"
+                    } else {
+                        "Corte: Día ${String.format(java.util.Locale.US, "%02d", card.cutDay)}"
+                    }
                     Text(
-                        text = "Corte: Día ${String.format(java.util.Locale.US, "%02d", card.cutDay)}",
+                        text = cutDisplay,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
                         color = if (isMc) Color(0xFFFCD34D) else Color(0xFF6FFBBE)
@@ -885,7 +902,7 @@ fun CycleConfigBottomSheet(
                                 color = CreditiaTertiary
                             )
                             Text(
-                                text = "Calculado sumando ${payBusinessDays.toInt()} días hábiles (sin contar sábados ni domingos) tras la fecha superior de corte del periodo.",
+                                text = "Calculado sumando ${payBusinessDays.toInt()} días hábiles (lunes a viernes) a partir del día de corte (${cutDay.toInt()}).",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -984,32 +1001,19 @@ fun CycleConfigBottomSheet(
 }
 
 /**
- * Counts business days (Mon..Fri) excluding Sat and Sun starting after the cutDay
- * of the period's upper cut date ("fecha superior del corte del periodo actual").
- * Example: If cutDay of Nov 2026 is 24 Nov 2026, counting 12 business days (without Sat/Sun)
- * reaches 10 Dec 2026.
+ * Cuenta días hábiles (lunes a viernes) tomando en cuenta desde el día de corte.
+ * Ejemplo: Si cutDay de Octubre 2026 es 24 de octubre, contando 12 días hábiles (lunes a viernes)
+ * resulta el 10 de noviembre de 2026.
  */
 fun calculateMaxPaymentDate(
     cutDay: Int,
     businessDays: Int,
     referenceYear: Int = 2026,
-    referenceMonth: Int = Calendar.NOVEMBER // Nov = 10
+    referenceMonth: Int = Calendar.OCTOBER // Oct = 9
 ): Pair<Calendar, Int> {
-    val cal = Calendar.getInstance()
-    cal.set(Calendar.YEAR, referenceYear)
-    cal.set(Calendar.MONTH, referenceMonth)
-    val maxDay = cal.getActualMaximum(Calendar.DAY_OF_MONTH)
-    cal.set(Calendar.DAY_OF_MONTH, cutDay.coerceIn(1, maxDay))
-
-    var remaining = businessDays.coerceIn(1, 30)
-    while (remaining > 0) {
-        cal.add(Calendar.DAY_OF_MONTH, 1)
-        val dow = cal.get(Calendar.DAY_OF_WEEK)
-        if (dow != Calendar.SATURDAY && dow != Calendar.SUNDAY) {
-            remaining--
-        }
-    }
-    return Pair(cal, cal.get(Calendar.DAY_OF_MONTH))
+    val cutCal = com.example.data.repository.CreditiaRepository.getCutCalendar(referenceYear, referenceMonth, cutDay)
+    val payCal = com.example.data.repository.CreditiaRepository.calculateMaxPaymentCalendar(cutCal, businessDays)
+    return Pair(payCal, payCal.get(Calendar.DAY_OF_MONTH))
 }
 
 @Composable
@@ -1551,13 +1555,13 @@ fun CardFormDialog(
                                     )
                                 }
                                 Text(
-                                    text = "Se toma la fecha superior de corte del periodo (día ${cutDay.toInt()}) y se suman ${payBusinessDays.toInt()} días hábiles (sin contar sábados ni domingos).",
+                                    text = "A partir del día de corte (${cutDay.toInt()}) se contabilizan los ${payBusinessDays.toInt()} días establecidos en la configuración de la tarjeta, considerando únicamente días de lunes a viernes.",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     lineHeight = 15.sp
                                 )
                                 Text(
-                                    text = "Ejemplo: Si la fecha superior de corte es el ${cutDay.toInt()} de noviembre de 2026, la fecha máxima de pago es: $sampleDayName, $sampleDayOfMonth de $sampleMonthName de $sampleYear (Día $computedPayDay).",
+                                    text = "Ejemplo: Para corte día ${cutDay.toInt()}, la fecha máxima de pago calculada es: $sampleDayName, $sampleDayOfMonth de $sampleMonthName de $sampleYear (Día $computedPayDay).",
                                     fontSize = 11.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = MaterialTheme.colorScheme.onSurface
@@ -1680,3 +1684,229 @@ fun AddCardDialog(
         }
     )
 }
+
+@Composable
+fun EditBillingCycleRangeDialog(
+    periodName: String,
+    cardName: String?,
+    currentRange: String,
+    calculatedRange: String,
+    isOverridden: Boolean,
+    onDismiss: () -> Unit,
+    onSaveRange: (String) -> Unit,
+    onResetToCalculated: () -> Unit
+) {
+    val context = LocalContext.current
+    val parts = remember(currentRange) {
+        val split = currentRange.split("-").map { it.trim() }
+        val s = split.getOrNull(0) ?: ""
+        val e = split.getOrNull(1) ?: ""
+        Pair(s, e)
+    }
+
+    var startDateStr by remember(parts) { mutableStateOf(parts.first) }
+    var endDateStr by remember(parts) { mutableStateOf(parts.second) }
+
+    fun parseCalendar(dateStr: String): Calendar {
+        val cal = Calendar.getInstance()
+        try {
+            val p = dateStr.split("/")
+            if (p.size == 3) {
+                cal.set(p[0].toInt(), p[1].toInt() - 1, p[2].toInt())
+            }
+        } catch (_: Exception) {}
+        return cal
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.EditCalendar,
+                contentDescription = null,
+                tint = CreditiaPrimary,
+                modifier = Modifier.size(32.dp)
+            )
+        },
+        title = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = "Editar Rango de Facturación",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 18.sp,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "Periodo: $periodName" + if (!cardName.isNullOrBlank()) " • $cardName" else "",
+                    fontSize = 12.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                if (isOverridden) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xFFF59E0B).copy(alpha = 0.12f),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = Color(0xFFD97706),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Text(
+                                text = "Este periodo tiene un rango personalizado manual sobrescrito.",
+                                fontSize = 11.5.sp,
+                                color = Color(0xFFD97706),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+
+                // Fecha de Inicio
+                OutlinedTextField(
+                    value = startDateStr,
+                    onValueChange = { startDateStr = it },
+                    label = { Text("Fecha de Inicio (Desde)") },
+                    placeholder = { Text("YYYY/MM/DD") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("input_start_cycle_date"),
+                    trailingIcon = {
+                        IconButton(onClick = {
+                            val c = parseCalendar(startDateStr)
+                            DatePickerDialog(
+                                context,
+                                { _, y, m, d ->
+                                    startDateStr = String.format(Locale.US, "%04d/%02d/%02d", y, m + 1, d)
+                                },
+                                c.get(Calendar.YEAR),
+                                c.get(Calendar.MONTH),
+                                c.get(Calendar.DAY_OF_MONTH)
+                            ).show()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.CalendarToday,
+                                contentDescription = "Elegir fecha de inicio",
+                                tint = CreditiaPrimary
+                            )
+                        }
+                    },
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                // Fecha de Fin (Corte)
+                OutlinedTextField(
+                    value = endDateStr,
+                    onValueChange = { endDateStr = it },
+                    label = { Text("Fecha de Fin / Corte (Hasta)") },
+                    placeholder = { Text("YYYY/MM/DD") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("input_end_cycle_date"),
+                    trailingIcon = {
+                        IconButton(onClick = {
+                            val c = parseCalendar(endDateStr)
+                            DatePickerDialog(
+                                context,
+                                { _, y, m, d ->
+                                    endDateStr = String.format(Locale.US, "%04d/%02d/%02d", y, m + 1, d)
+                                },
+                                c.get(Calendar.YEAR),
+                                c.get(Calendar.MONTH),
+                                c.get(Calendar.DAY_OF_MONTH)
+                            ).show()
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.CalendarToday,
+                                contentDescription = "Elegir fecha de fin",
+                                tint = CreditiaPrimary
+                            )
+                        }
+                    },
+                    shape = RoundedCornerShape(10.dp)
+                )
+
+                // Resumen previo
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = CreditiaSurfaceContainerLow,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Rango resultante a aplicar:",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "${startDateStr.trim()} - ${endDateStr.trim()}",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = CreditiaPrimary
+                        )
+                        if (calculatedRange.isNotBlank()) {
+                            Text(
+                                text = "Fórmula automática original: $calculatedRange",
+                                fontSize = 10.5.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val finalRange = "${startDateStr.trim()} - ${endDateStr.trim()}"
+                    onSaveRange(finalRange)
+                },
+                enabled = startDateStr.isNotBlank() && endDateStr.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = CreditiaPrimary),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.testTag("btn_save_cycle_range")
+            ) {
+                Text("Sobrescribir Rango", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (isOverridden) {
+                    TextButton(
+                        onClick = onResetToCalculated,
+                        modifier = Modifier.testTag("btn_reset_cycle_range")
+                    ) {
+                        Text("Automático", color = Color(0xFFD97706), fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("btn_cancel_cycle_range")
+                ) {
+                    Text("Cancelar")
+                }
+            }
+        }
+    )
+}
+

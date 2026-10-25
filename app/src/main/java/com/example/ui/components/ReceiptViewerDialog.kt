@@ -22,15 +22,20 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -62,8 +67,10 @@ fun ReceiptViewerDialog(
     imageUri: String,
     title: String = "Comprobante de compra",
     subtitle: String? = null,
+    onDeleteReceipt: ((deletedUri: String) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
     val uriList = remember(imageUri) {
         imageUri.split("|").map { it.trim() }.filter { it.isNotBlank() }
     }
@@ -312,6 +319,23 @@ fun ReceiptViewerDialog(
                             }
                         }
 
+                        if (onDeleteReceipt != null) {
+                            IconButton(
+                                onClick = { showDeleteConfirmation = true },
+                                modifier = Modifier
+                                    .size(38.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFEF4444).copy(alpha = 0.35f))
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Eliminar comprobante",
+                                    tint = Color(0xFFFCA5A5),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
                         IconButton(
                             onClick = onDismiss,
                             modifier = Modifier
@@ -328,6 +352,53 @@ fun ReceiptViewerDialog(
                         }
                     }
                 }
+            }
+
+            // Diálogo de confirmación para eliminar foto del comprobante
+            if (showDeleteConfirmation) {
+                AlertDialog(
+                    onDismissRequest = { showDeleteConfirmation = false },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(32.dp)
+                        )
+                    },
+                    title = {
+                        Text(
+                            text = "¿Eliminar comprobante?",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 17.sp
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = "La imagen de este comprobante se borrará permanentemente del almacenamiento interno de la app.",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                showDeleteConfirmation = false
+                                onDeleteReceipt?.invoke(activePhotoUri)
+                                onDismiss()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Eliminar", color = Color.White, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDeleteConfirmation = false }) {
+                            Text("Cancelar")
+                        }
+                    }
+                )
             }
 
             // Barra inferior con controles y ayuda de gestos
