@@ -660,8 +660,50 @@ class CreditiaViewModel @JvmOverloads constructor(
         }
     }
 
+    fun selectAllExpenses(candidateExpenses: List<ExpenseEntity>) {
+        val all = allExpenses.value.ifEmpty {
+            try {
+                kotlinx.coroutines.runBlocking { repository.getAllExpensesList() }.ifEmpty { candidateExpenses }
+            } catch (e: Exception) {
+                candidateExpenses
+            }
+        }
+        val selectable = candidateExpenses.filter { !it.isLockedByActiveDeferred(all) }
+        val selectableIds = selectable.map { it.id }.toSet()
+        if (candidateExpenses.isNotEmpty() && selectableIds.isEmpty()) {
+            showToast("No se seleccionó ningún registro: todos los registros están bloqueados")
+            return
+        }
+        val lockedCount = candidateExpenses.size - selectable.size
+        _uiState.update { it.copy(selectedExpenseIds = selectableIds, isSelectionMode = selectableIds.isNotEmpty()) }
+        if (lockedCount > 0) {
+            showToast("Se seleccionaron ${selectable.size} registros ($lockedCount bloqueados omitidos)")
+        } else if (selectable.isNotEmpty()) {
+            showToast("✓ Se seleccionaron todos los registros (${selectable.size})")
+        }
+    }
+
     fun selectAllExpenses(expenseIds: Set<Long>) {
-        _uiState.update { it.copy(selectedExpenseIds = expenseIds, isSelectionMode = expenseIds.isNotEmpty()) }
+        val all = allExpenses.value.ifEmpty {
+            try {
+                kotlinx.coroutines.runBlocking { repository.getAllExpensesList() }
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+        val filteredIds = expenseIds.filter { id ->
+            val expense = all.find { it.id == id }
+            if (expense != null) {
+                !expense.isLockedByActiveDeferred(all)
+            } else {
+                all.isEmpty()
+            }
+        }.toSet()
+        val lockedCount = expenseIds.size - filteredIds.size
+        _uiState.update { it.copy(selectedExpenseIds = filteredIds, isSelectionMode = filteredIds.isNotEmpty()) }
+        if (lockedCount > 0) {
+            showToast("Se seleccionaron ${filteredIds.size} registros ($lockedCount bloqueados omitidos)")
+        }
     }
 
     fun clearExpenseSelection() {

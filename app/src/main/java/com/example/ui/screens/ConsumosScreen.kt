@@ -24,6 +24,8 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material.icons.filled.Checklist
+import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Deselect
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -235,6 +237,14 @@ fun ConsumosScreen(
     var showMultiDeferDialog by remember { mutableStateOf(false) }
     var showEditCycleRangeDialog by remember { mutableStateOf(false) }
     var targetPeriodToEdit by remember { mutableStateOf<String?>(null) }
+
+    val selectableExpenses = remember(filteredExpenses, allExpenses) {
+        filteredExpenses.filter { !it.isLockedByActiveDeferred(allExpenses) }
+    }
+    val selectableIds = remember(selectableExpenses) {
+        selectableExpenses.map { it.id }.toSet()
+    }
+    val areAllSelectableSelected = selectableIds.isNotEmpty() && selectedExpenseIds.containsAll(selectableIds)
 
     // Interceptar botón atrás del sistema para cancelar el modo de selección sin salir de la app
     BackHandler(enabled = isSelectionMode) {
@@ -1283,28 +1293,49 @@ fun ConsumosScreen(
                                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isSelectionMode) CreditiaTertiary.copy(alpha = 0.15f) else Color.Transparent)
+                                        .background(if (isSelectionMode && areAllSelectableSelected) CreditiaTertiary.copy(alpha = 0.15f) else CreditiaPrimary.copy(alpha = 0.10f))
                                         .clickable {
-                                            if (isSelectionMode) {
+                                            if (isSelectionMode && areAllSelectableSelected) {
                                                 viewModel.clearExpenseSelection()
                                             } else {
-                                                filteredExpenses.firstOrNull()?.let { viewModel.toggleExpenseSelection(it.id) }
+                                                viewModel.selectAllExpenses(filteredExpenses)
                                             }
                                         }
-                                        .padding(horizontal = 6.dp, vertical = 4.dp)
+                                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                                        .testTag("btn_select_all_expenses")
                                 ) {
                                     Icon(
-                                        imageVector = Icons.Default.Checklist,
-                                        contentDescription = "Seleccionar",
-                                        tint = if (isSelectionMode) CreditiaTertiary else CreditiaPrimary,
+                                        imageVector = if (isSelectionMode && areAllSelectableSelected) Icons.Default.Deselect else Icons.Default.SelectAll,
+                                        contentDescription = if (isSelectionMode && areAllSelectableSelected) "Deseleccionar todos" else "Seleccionar todos",
+                                        tint = if (isSelectionMode && areAllSelectableSelected) CreditiaTertiary else CreditiaPrimary,
                                         modifier = Modifier.size(16.dp)
                                     )
                                     Text(
-                                        text = if (isSelectionMode) "Cancelar" else "Seleccionar",
-                                        fontSize = 13.sp,
+                                        text = when {
+                                            isSelectionMode && areAllSelectableSelected -> "Deseleccionar"
+                                            isSelectionMode -> "Todos (${selectableExpenses.size})"
+                                            else -> "Seleccionar todos"
+                                        },
+                                        fontSize = 12.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = if (isSelectionMode) CreditiaTertiary else CreditiaPrimary
+                                        color = if (isSelectionMode && areAllSelectableSelected) CreditiaTertiary else CreditiaPrimary
                                     )
+                                }
+
+                                if (isSelectionMode) {
+                                    IconButton(
+                                        onClick = { viewModel.clearExpenseSelection() },
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .testTag("btn_cancel_selection")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Cancelar selección",
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
                                 }
                             }
 
@@ -1613,9 +1644,16 @@ fun ConsumosScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val lockedCount = remember(filteredExpenses, allExpenses) {
+                        filteredExpenses.count { it.isLockedByActiveDeferred(allExpenses) }
+                    }
                     Column {
                         Text(
-                            text = "${selectedExpenseIds.size} consumos seleccionados",
+                            text = if (lockedCount > 0) {
+                                "${selectedExpenseIds.size} seleccionados ($lockedCount bloqueados omitidos)"
+                            } else {
+                                "${selectedExpenseIds.size} consumos seleccionados"
+                            },
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -1634,15 +1672,22 @@ fun ConsumosScreen(
                     ) {
                         TextButton(
                             onClick = {
-                                if (selectedExpenseIds.size == filteredExpenses.size) {
+                                if (areAllSelectableSelected) {
                                     viewModel.clearExpenseSelection()
                                 } else {
-                                    viewModel.selectAllExpenses(filteredExpenses.map { it.id }.toSet())
+                                    viewModel.selectAllExpenses(filteredExpenses)
                                 }
-                            }
+                            },
+                            modifier = Modifier.testTag("btn_toggle_select_all_bar")
                         ) {
+                            Icon(
+                                imageVector = if (areAllSelectableSelected) Icons.Default.Deselect else Icons.Default.SelectAll,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = if (selectedExpenseIds.size == filteredExpenses.size) "Deseleccionar" else "Todos",
+                                text = if (areAllSelectableSelected) "Deseleccionar" else "Seleccionar todos",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold
                             )
