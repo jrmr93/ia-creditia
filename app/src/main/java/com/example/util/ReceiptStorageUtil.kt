@@ -1,12 +1,18 @@
 package com.example.util
 
+import android.content.ContentValues
 import android.content.Context
+import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import com.example.data.model.ExpenseEntity
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
+import java.net.URL
 import java.util.UUID
 
 object ReceiptStorageUtil {
@@ -95,6 +101,100 @@ object ReceiptStorageUtil {
     fun deleteReceiptsForExpenses(expenses: List<ExpenseEntity>) {
         expenses.forEach { expense ->
             deleteReceiptFile(expense.receiptUri)
+        }
+    }
+
+    /**
+     * Guarda la imagen del comprobante en el almacenamiento público del dispositivo
+     * (Directorio Pictures/Creditia en la galería o Downloads).
+     */
+    fun downloadReceiptImage(
+        context: Context,
+        imageUriStr: String,
+        suggestedTitle: String? = null
+    ): Boolean {
+        return try {
+            val cleanTitle = suggestedTitle?.filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+                ?.take(30)
+                ?.ifBlank { "Comprobante" } ?: "Comprobante"
+            val fileName = "Creditia_${cleanTitle}_${System.currentTimeMillis()}.jpg"
+
+            fun getInputStream(): InputStream? {
+                return when {
+                    imageUriStr.startsWith("/") || imageUriStr.startsWith("file://") -> {
+                        val file = File(imageUriStr.removePrefix("file://"))
+                        if (file.exists()) file.inputStream() else null
+                    }
+                    imageUriStr.startsWith("content://") -> {
+                        context.contentResolver.openInputStream(Uri.parse(imageUriStr))
+                    }
+                    imageUriStr.startsWith("http://") || imageUriStr.startsWith("https://") -> {
+                        URL(imageUriStr).openStream()
+                    }
+                    else -> {
+                        val file = File(imageUriStr)
+                        if (file.exists()) file.inputStream() else null
+                    }
+                }
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    val contentValues = ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                        put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Creditia")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+
+                    val imageUri = context.contentResolver.insert(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        contentValues
+                    )
+
+                    if (imageUri != null) {
+                        val input = getInputStream() ?: return false
+                        input.use { inStream ->
+                            context.contentResolver.openOutputStream(imageUri)?.use { outStream ->
+                                inStream.copyTo(outStream)
+                            } ?: return false
+                        }
+
+                        contentValues.clear()
+                        contentValues.put(MediaStore.Images.Media.IS_PENDING, 0)
+                        context.contentResolver.update(imageUri, contentValues, null, null)
+                        return true
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "MediaStore insert falló, intentando fallback de almacenamiento: ${e.message}")
+                }
+            }
+
+            // Fallback para API < 29 o entornos donde MediaStore inserción directa no está disponible
+            val picturesDir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                "Creditia"
+            )
+            if (!picturesDir.exists()) {
+                picturesDir.mkdirs()
+            }
+            val destFile = File(picturesDir, fileName)
+            val input = getInputStream() ?: return false
+            input.use { inStream ->
+                FileOutputStream(destFile).use { outStream ->
+                    inStream.copyTo(outStream)
+                }
+            }
+            MediaScannerConnection.scanFile(
+                context,
+                arrayOf(destFile.absolutePath),
+                arrayOf("image/jpeg"),
+                null
+            )
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Error al descargar comprobante a la galería: ${e.message}", e)
+            false
         }
     }
 }

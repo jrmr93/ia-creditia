@@ -60,7 +60,16 @@ import java.io.File
 
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import android.widget.Toast
+import com.example.util.ReceiptStorageUtil
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ReceiptViewerDialog(
@@ -70,6 +79,10 @@ fun ReceiptViewerDialog(
     onDeleteReceipt: ((deletedUri: String) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var isDownloading by remember { mutableStateOf(false) }
+
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     val uriList = remember(imageUri) {
         imageUri.split("|").map { it.trim() }.filter { it.isNotBlank() }
@@ -313,6 +326,58 @@ fun ReceiptViewerDialog(
                                 Icon(
                                     imageVector = Icons.Default.Refresh,
                                     contentDescription = "Restablecer zoom",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+
+                        // Botón Descargar imagen del comprobante
+                        IconButton(
+                            onClick = {
+                                if (!isDownloading) {
+                                    coroutineScope.launch {
+                                        isDownloading = true
+                                        val success = withContext(Dispatchers.IO) {
+                                            ReceiptStorageUtil.downloadReceiptImage(
+                                                context = context,
+                                                imageUriStr = activePhotoUri,
+                                                suggestedTitle = title
+                                            )
+                                        }
+                                        isDownloading = false
+                                        if (success) {
+                                            Toast.makeText(
+                                                context,
+                                                "✓ Comprobante guardado en la galería (Pictures/Creditia)",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        } else {
+                                            Toast.makeText(
+                                                context,
+                                                "Error al descargar la imagen del comprobante",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                        }
+                                    }
+                                }
+                            },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.2f))
+                                .testTag("btn_download_receipt")
+                        ) {
+                            if (isDownloading) {
+                                CircularProgressIndicator(
+                                    color = Color.White,
+                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.FileDownload,
+                                    contentDescription = "Descargar comprobante",
                                     tint = Color.White,
                                     modifier = Modifier.size(20.dp)
                                 )
