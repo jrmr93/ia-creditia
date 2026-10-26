@@ -941,6 +941,24 @@ class ExampleRobolectricTest {
 
     db.close()
   }
+
+  @Test
+  fun `test download receipt image to public gallery`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val tempReceiptFile = java.io.File(context.cacheDir, "mock_receipt_${System.currentTimeMillis()}.jpg")
+    tempReceiptFile.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0x12, 0x34))
+
+    val result = com.example.util.ReceiptStorageUtil.downloadReceiptImage(
+      context = context,
+      imageUriStr = tempReceiptFile.absolutePath,
+      suggestedTitle = "CompraSupermercado"
+    )
+
+    org.junit.Assert.assertTrue("downloadReceiptImage debe retornar true", result)
+
+    // Limpieza
+    tempReceiptFile.delete()
+  }
 }
 
 
