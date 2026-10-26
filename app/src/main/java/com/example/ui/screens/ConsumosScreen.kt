@@ -36,6 +36,7 @@ import com.example.ui.components.ReceiptViewerDialog
 import com.example.ui.components.DiferirConsumoDialog
 import com.example.ui.components.LogoSearchDialog
 import com.example.ui.components.EditBillingCycleRangeDialog
+import com.example.ui.viewmodel.ExpenseFilterType
 import androidx.compose.material.icons.filled.AutoAwesome
 import java.io.File
 import androidx.compose.foundation.layout.Arrangement
@@ -176,6 +177,8 @@ fun ConsumosScreen(
         availablePeriods.firstOrNull() ?: currentActivePeriod
     }
 
+    val isCurrentPeriod = selectedPeriod.equals(currentActivePeriod, ignoreCase = true)
+
     val filteredExpenses = viewModel.getFilteredExpenses(
         expenses = allExpenses,
         selectedCard = selectedCard,
@@ -183,7 +186,8 @@ fun ConsumosScreen(
         selectedExactDate = uiState.selectedExactDate,
         searchQuery = uiState.searchQuery,
         sortOrder = uiState.sortOrder,
-        filterOnlyDeferred = uiState.filterOnlyDeferred
+        filterOnlyDeferred = uiState.filterOnlyDeferred,
+        expenseFilterType = uiState.expenseFilterType
     )
 
     val periodSum = if (selectedCard != null) {
@@ -192,7 +196,8 @@ fun ConsumosScreen(
             cardId = selectedCard.id,
             period = selectedPeriod,
             exactDate = uiState.selectedExactDate,
-            filterOnlyDeferred = uiState.filterOnlyDeferred
+            filterOnlyDeferred = uiState.filterOnlyDeferred,
+            expenseFilterType = uiState.expenseFilterType
         )
     } else 0.0
 
@@ -218,6 +223,7 @@ fun ConsumosScreen(
     }
 
     var showSortMenu by remember { mutableStateOf(false) }
+    var showFilterTypeDropdown by remember { mutableStateOf(false) }
     var showCardDropdown by remember { mutableStateOf(false) }
     var showPeriodPickerSheet by remember { mutableStateOf(false) }
     var viewingReceiptUri by remember { mutableStateOf<String?>(null) }
@@ -669,7 +675,7 @@ fun ConsumosScreen(
                                     modifier = Modifier.size(18.dp)
                                 )
                                 Text(
-                                    text = "Periodo activo:",
+                                    text = if (isCurrentPeriod) "Periodo activo:" else "Periodo:",
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -681,18 +687,20 @@ fun ConsumosScreen(
                                 )
                             }
 
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(CreditiaPrimary)
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
-                            ) {
-                                Text(
-                                    text = if (selectedPeriod == "Todos los históricos") "HISTORIAL" else "EN CURSO",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
+                            if (isCurrentPeriod) {
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(CreditiaPrimary)
+                                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                                ) {
+                                    Text(
+                                        text = "EN CURSO",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
                             }
                         }
                     }
@@ -905,51 +913,112 @@ fun ConsumosScreen(
                                 }
                             }
 
-                            // Botón/Chip Solo diferidos
-                            val isDeferredActive = uiState.filterOnlyDeferred
+                            // Botón/Selector de Tipo de Movimiento (Todos, Consumos, Diferidos, Pagos)
+                            val isFilterActive = uiState.expenseFilterType != ExpenseFilterType.ALL
                             Box(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isDeferredActive) CreditiaSecondaryContainer else CreditiaSurfaceContainer)
+                                    .background(if (isFilterActive) CreditiaSecondaryContainer else CreditiaSurfaceContainer)
                                     .border(
                                         1.dp,
-                                        if (isDeferredActive) CreditiaSecondary else Color.Transparent,
+                                        if (isFilterActive) CreditiaSecondary else Color.Transparent,
                                         RoundedCornerShape(8.dp)
                                     )
                                     .clickable {
-                                        viewModel.toggleFilterOnlyDeferred()
+                                        showFilterTypeDropdown = true
                                     }
                                     .padding(horizontal = 10.dp, vertical = 7.dp)
-                                    .testTag("btn_filter_only_deferred"),
+                                    .testTag("btn_filter_expense_type"),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
+                                    val filterIcon = when (uiState.expenseFilterType) {
+                                        ExpenseFilterType.ALL -> Icons.Default.Layers
+                                        ExpenseFilterType.EXPENSES -> Icons.Default.CreditCard
+                                        ExpenseFilterType.DEFERRED -> Icons.Default.EventRepeat
+                                        ExpenseFilterType.PAYMENTS -> Icons.Default.Payment
+                                    }
                                     Icon(
-                                        imageVector = if (isDeferredActive) Icons.Default.CheckCircle else Icons.Default.EventRepeat,
-                                        contentDescription = "Filtrar solo consumos diferidos",
-                                        tint = if (isDeferredActive) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        imageVector = if (isFilterActive) Icons.Default.CheckCircle else filterIcon,
+                                        contentDescription = "Filtrar por tipo",
+                                        tint = if (isFilterActive) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                                         modifier = Modifier.size(14.dp)
                                     )
                                     Text(
-                                        text = "Solo diferidos",
+                                        text = uiState.expenseFilterType.displayName,
                                         fontSize = 12.sp,
-                                        fontWeight = if (isDeferredActive) FontWeight.Bold else FontWeight.SemiBold,
-                                        color = if (isDeferredActive) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1
+                                        fontWeight = if (isFilterActive) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = if (isFilterActive) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f, fill = false)
                                     )
-                                    if (isDeferredActive) {
+                                    if (isFilterActive) {
                                         Icon(
                                             imageVector = Icons.Default.Clear,
-                                            contentDescription = "Quitar filtro solo diferidos",
+                                            contentDescription = "Quitar filtro de tipo",
                                             tint = MaterialTheme.colorScheme.onSecondaryContainer,
                                             modifier = Modifier
                                                 .size(14.dp)
-                                                .clickable { viewModel.toggleFilterOnlyDeferred(false) }
-                                                .testTag("btn_clear_deferred_filter")
+                                                .clickable { viewModel.setExpenseFilterType(ExpenseFilterType.ALL) }
+                                                .testTag("btn_clear_type_filter")
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                }
+
+                                DropdownMenu(
+                                    expanded = showFilterTypeDropdown,
+                                    onDismissRequest = { showFilterTypeDropdown = false }
+                                ) {
+                                    ExpenseFilterType.values().forEach { fType ->
+                                        val isCurrent = uiState.expenseFilterType == fType
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = fType.displayName,
+                                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                                    color = if (isCurrent) CreditiaPrimary else MaterialTheme.colorScheme.onSurface
+                                                )
+                                            },
+                                            leadingIcon = {
+                                                val icon = when (fType) {
+                                                    ExpenseFilterType.ALL -> Icons.Default.Layers
+                                                    ExpenseFilterType.EXPENSES -> Icons.Default.CreditCard
+                                                    ExpenseFilterType.DEFERRED -> Icons.Default.EventRepeat
+                                                    ExpenseFilterType.PAYMENTS -> Icons.Default.Payment
+                                                }
+                                                Icon(
+                                                    imageVector = icon,
+                                                    contentDescription = null,
+                                                    tint = if (isCurrent) CreditiaPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            trailingIcon = if (isCurrent) {
+                                                {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        tint = CreditiaPrimary,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            } else null,
+                                            onClick = {
+                                                viewModel.setExpenseFilterType(fType)
+                                                showFilterTypeDropdown = false
+                                            }
                                         )
                                     }
                                 }
@@ -961,14 +1030,26 @@ fun ConsumosScreen(
                 // 3. Resumen Financiero M3 con Gradiente Sutil de Confianza
                 item {
                     val summaryTitle = if (!uiState.selectedExactDate.isNullOrBlank()) {
-                        if (uiState.filterOnlyDeferred) "TOTAL DIFERIDOS DEL DÍA (${uiState.selectedExactDate})"
-                        else "TOTAL DE LA FECHA SELECCIONADA (${uiState.selectedExactDate})"
+                        when (uiState.expenseFilterType) {
+                            ExpenseFilterType.DEFERRED -> "TOTAL DIFERIDOS DEL DÍA (${uiState.selectedExactDate})"
+                            ExpenseFilterType.EXPENSES -> "TOTAL CONSUMOS DEL DÍA (${uiState.selectedExactDate})"
+                            ExpenseFilterType.PAYMENTS -> "TOTAL PAGOS DEL DÍA (${uiState.selectedExactDate})"
+                            ExpenseFilterType.ALL -> "TOTAL DE LA FECHA SELECCIONADA (${uiState.selectedExactDate})"
+                        }
                     } else if (selectedPeriod == "Todos los históricos") {
-                        if (uiState.filterOnlyDeferred) "TOTAL DIFERIDOS HISTÓRICO COMPLETO"
-                        else "TOTAL HISTÓRICO COMPLETO"
+                        when (uiState.expenseFilterType) {
+                            ExpenseFilterType.DEFERRED -> "TOTAL DIFERIDOS HISTÓRICO COMPLETO"
+                            ExpenseFilterType.EXPENSES -> "TOTAL CONSUMOS HISTÓRICO COMPLETO"
+                            ExpenseFilterType.PAYMENTS -> "TOTAL PAGOS HISTÓRICO COMPLETO"
+                            ExpenseFilterType.ALL -> "TOTAL HISTÓRICO COMPLETO"
+                        }
                     } else {
-                        if (uiState.filterOnlyDeferred) "SUMATORIA DIFERIDOS: ${selectedPeriod.uppercase(Locale.ROOT)}"
-                        else "SUMATORIA TOTAL: ${selectedPeriod.uppercase(Locale.ROOT)}"
+                        when (uiState.expenseFilterType) {
+                            ExpenseFilterType.DEFERRED -> "SUMATORIA DIFERIDOS: ${selectedPeriod.uppercase(Locale.ROOT)}"
+                            ExpenseFilterType.EXPENSES -> "SUMATORIA CONSUMOS: ${selectedPeriod.uppercase(Locale.ROOT)}"
+                            ExpenseFilterType.PAYMENTS -> "SUMATORIA PAGOS: ${selectedPeriod.uppercase(Locale.ROOT)}"
+                            ExpenseFilterType.ALL -> "SUMATORIA TOTAL: ${selectedPeriod.uppercase(Locale.ROOT)}"
+                        }
                     }
 
                     Card(
@@ -1029,8 +1110,8 @@ fun ConsumosScreen(
                                     }
                                 }
 
-                                // Corte en X días badge
-                                if (uiState.selectedExactDate.isNullOrBlank() && selectedPeriod != "Todos los históricos") {
+                                // Corte en X días badge - SOLO si el periodo actual está seleccionado
+                                if (isCurrentPeriod && uiState.selectedExactDate.isNullOrBlank()) {
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(8.dp))
@@ -1055,7 +1136,7 @@ fun ConsumosScreen(
                                             )
                                         }
                                     }
-                                } else {
+                                } else if (!uiState.selectedExactDate.isNullOrBlank()) {
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(8.dp))
@@ -1063,7 +1144,21 @@ fun ConsumosScreen(
                                             .padding(horizontal = 10.dp, vertical = 5.dp)
                                     ) {
                                         Text(
-                                            text = if (!uiState.selectedExactDate.isNullOrBlank()) "Fecha Filtrada" else "Todos los Registros",
+                                            text = "Fecha Filtrada",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                    }
+                                } else if (selectedPeriod == "Todos los históricos") {
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(CreditiaSecondaryContainer)
+                                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                                    ) {
+                                        Text(
+                                            text = "Todos los Registros",
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSecondaryContainer
@@ -1244,41 +1339,57 @@ fun ConsumosScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Chip de Filtro Solo Diferidos en la barra horizontal
-                            val isDeferredFilterActive = uiState.filterOnlyDeferred
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(100.dp))
-                                    .background(if (isDeferredFilterActive) CreditiaSecondary else CreditiaSurfaceContainer)
-                                    .border(
-                                        1.dp,
-                                        if (isDeferredFilterActive) CreditiaSecondary else CreditiaSurfaceContainerHigh,
-                                        RoundedCornerShape(100.dp)
-                                    )
-                                    .clickable {
-                                        viewModel.toggleFilterOnlyDeferred()
-                                    }
-                                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                                    .testTag("chip_filter_deferred_tune")
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            // Chips de Tipo de Movimiento: Todos, Consumos, Diferidos, Pagos
+                            ExpenseFilterType.values().forEach { fType ->
+                                val isSelected = uiState.expenseFilterType == fType
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(100.dp))
+                                        .background(if (isSelected) CreditiaSecondary else CreditiaSurfaceContainer)
+                                        .border(
+                                            1.dp,
+                                            if (isSelected) CreditiaSecondary else CreditiaSurfaceContainerHigh,
+                                            RoundedCornerShape(100.dp)
+                                        )
+                                        .clickable {
+                                            viewModel.setExpenseFilterType(fType)
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                        .testTag("chip_filter_${fType.name.lowercase()}")
                                 ) {
-                                    Icon(
-                                        imageVector = if (isDeferredFilterActive) Icons.Default.CheckCircle else Icons.Default.EventRepeat,
-                                        contentDescription = null,
-                                        tint = if (isDeferredFilterActive) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(13.dp)
-                                    )
-                                    Text(
-                                        text = "Solo diferidos",
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isDeferredFilterActive) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isDeferredFilterActive) Color.White else MaterialTheme.colorScheme.onSurface
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        val icon = when (fType) {
+                                            ExpenseFilterType.ALL -> Icons.Default.Layers
+                                            ExpenseFilterType.EXPENSES -> Icons.Default.CreditCard
+                                            ExpenseFilterType.DEFERRED -> Icons.Default.EventRepeat
+                                            ExpenseFilterType.PAYMENTS -> Icons.Default.Payment
+                                        }
+                                        Icon(
+                                            imageVector = if (isSelected) Icons.Default.CheckCircle else icon,
+                                            contentDescription = null,
+                                            tint = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Text(
+                                            text = fType.shortLabel,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
                                 }
                             }
+
+                            // Separador visual sutil entre filtros de tipo y ordenamientos
+                            Box(
+                                modifier = Modifier
+                                    .height(18.dp)
+                                    .width(1.dp)
+                                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            )
                             SortOrder.values().forEach { order ->
                                 val isSelected = uiState.sortOrder == order
                                 Box(
@@ -1330,20 +1441,27 @@ fun ConsumosScreen(
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(40.dp)
                                 )
-                                val emptyMessage = if (uiState.filterOnlyDeferred) {
-                                    if (!uiState.selectedExactDate.isNullOrBlank()) {
-                                        "No hay consumos diferidos en la fecha ${uiState.selectedExactDate}"
-                                    } else if (selectedPeriod == "Todos los históricos") {
-                                        "No hay consumos diferidos registrados en el historial de esta tarjeta"
-                                    } else {
-                                        "No hay consumos diferidos en el periodo $selectedPeriod"
+                                val emptyMessage = when (uiState.expenseFilterType) {
+                                    ExpenseFilterType.DEFERRED -> {
+                                        if (!uiState.selectedExactDate.isNullOrBlank()) "No hay consumos diferidos en la fecha ${uiState.selectedExactDate}"
+                                        else if (selectedPeriod == "Todos los históricos") "No hay consumos diferidos registrados en el historial de esta tarjeta"
+                                        else "No hay consumos diferidos en el periodo $selectedPeriod"
                                     }
-                                } else if (!uiState.selectedExactDate.isNullOrBlank()) {
-                                    "No hay consumos en la fecha ${uiState.selectedExactDate}"
-                                } else if (selectedPeriod == "Todos los históricos") {
-                                    "No hay consumos registrados en el historial de esta tarjeta"
-                                } else {
-                                    "No hay consumos en el periodo $selectedPeriod"
+                                    ExpenseFilterType.EXPENSES -> {
+                                        if (!uiState.selectedExactDate.isNullOrBlank()) "No hay consumos corrientes en la fecha ${uiState.selectedExactDate}"
+                                        else if (selectedPeriod == "Todos los históricos") "No hay consumos corrientes registrados en el historial de esta tarjeta"
+                                        else "No hay consumos corrientes en el periodo $selectedPeriod"
+                                    }
+                                    ExpenseFilterType.PAYMENTS -> {
+                                        if (!uiState.selectedExactDate.isNullOrBlank()) "No hay pagos con tarjeta en la fecha ${uiState.selectedExactDate}"
+                                        else if (selectedPeriod == "Todos los históricos") "No hay pagos con tarjeta registrados en el historial de esta tarjeta"
+                                        else "No hay pagos con tarjeta registrados en el periodo $selectedPeriod"
+                                    }
+                                    ExpenseFilterType.ALL -> {
+                                        if (!uiState.selectedExactDate.isNullOrBlank()) "No hay movimientos en la fecha ${uiState.selectedExactDate}"
+                                        else if (selectedPeriod == "Todos los históricos") "No hay movimientos registrados en el historial de esta tarjeta"
+                                        else "No hay consumos ni movimientos en el periodo $selectedPeriod"
+                                    }
                                 }
                                 Text(
                                     text = emptyMessage,

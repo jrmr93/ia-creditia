@@ -1614,5 +1614,51 @@ class ImageSearchTest {
     assertEquals("Octubre 2026", repo.calculateBillingPeriod("2026/09/22", 24, customRangesOctEarly))
     assertEquals("Septiembre 2026", repo.calculateBillingPeriod("2026/09/19", 24, customRangesOctEarly))
   }
+
+  @Test
+  fun testUpcomingAlertOverwrittenCustomPaymentLimit() {
+    val card = com.example.data.model.CreditCardEntity(
+      id = 10,
+      bankName = "BANCO GUAYAQUIL",
+      cardName = "Mastercard Black",
+      network = "MASTERCARD",
+      tier = "BLACK",
+      last4 = "9988",
+      cutDay = 24,
+      payDay = 10,
+      payBusinessDays = 12
+    )
+
+    val testCurrentTime = Calendar.getInstance().apply {
+      set(2026, Calendar.OCTOBER, 26, 10, 0, 0)
+    }.timeInMillis
+
+    // 1. Con fecha máxima sobrescrita (custom)
+    val scheduleOverwritten = com.example.util.NotificationScheduler.calculateUpcomingAlert(
+      card = card,
+      leadDays = 3,
+      currentTimeMillis = testCurrentTime,
+      customPaymentLimitResolver = { cardId, period ->
+        if (cardId == 10L && period == "Octubre 2026") "Dom 15/11/2026" else null
+      }
+    )
+
+    assertTrue("schedule.isOverwritten debe ser true cuando existe fecha personalizada", scheduleOverwritten.isOverwritten)
+    assertEquals("15/11/2026", scheduleOverwritten.paymentLimitDateStr)
+    assertEquals("12/11/2026", scheduleOverwritten.alertDateStr)
+    assertTrue("Trigger millis debe estar en el futuro respecto a testCurrentTime", scheduleOverwritten.triggerMillis > testCurrentTime)
+
+    // 2. Sin fecha máxima sobrescrita (automática)
+    val scheduleAutomatic = com.example.util.NotificationScheduler.calculateUpcomingAlert(
+      card = card,
+      leadDays = 3,
+      currentTimeMillis = testCurrentTime,
+      customPaymentLimitResolver = { _, _ -> null }
+    )
+
+    assertFalse("schedule.isOverwritten debe ser false cuando no hay fecha personalizada", scheduleAutomatic.isOverwritten)
+    assertEquals("10/11/2026", scheduleAutomatic.paymentLimitDateStr)
+    assertEquals("07/11/2026", scheduleAutomatic.alertDateStr)
+  }
 }
 
