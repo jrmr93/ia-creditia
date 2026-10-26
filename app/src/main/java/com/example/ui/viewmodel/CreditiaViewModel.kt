@@ -47,6 +47,13 @@ enum class SortOrder(val displayName: String, val shortLabel: String) {
     AMOUNT_ASC("Monto (menor a mayor)", "▼ Menor monto")
 }
 
+enum class ExpenseFilterType(val displayName: String, val shortLabel: String) {
+    ALL("Todos los tipos", "Todos"),
+    EXPENSES("Solo consumos", "Consumos"),
+    DEFERRED("Solo diferidos", "Diferidos"),
+    PAYMENTS("Solo pagos a tarjeta", "Pagos")
+}
+
 data class PeriodFinancialSummary(
     val totalExpenses: Double = 0.0,
     val totalPayments: Double = 0.0,
@@ -61,6 +68,7 @@ data class CreditiaUiState(
     val selectedPeriod: String = "",
     val selectedExactDate: String? = null,
     val filterOnlyDeferred: Boolean = false,
+    val expenseFilterType: ExpenseFilterType = ExpenseFilterType.ALL,
     val sortOrder: SortOrder = SortOrder.DATE_DESC,
     val searchQuery: String = "",
     val isSearchActive: Boolean = false,
@@ -324,10 +332,21 @@ class CreditiaViewModel @JvmOverloads constructor(
         showToast("Orden: ${order.displayName}")
     }
 
+    fun setExpenseFilterType(filterType: ExpenseFilterType) {
+        val isOnlyDeferred = (filterType == ExpenseFilterType.DEFERRED)
+        _uiState.update { it.copy(expenseFilterType = filterType, filterOnlyDeferred = isOnlyDeferred) }
+        val msg = when (filterType) {
+            ExpenseFilterType.ALL -> "Mostrando todos los registros"
+            ExpenseFilterType.EXPENSES -> "Filtrando: Solo consumos"
+            ExpenseFilterType.DEFERRED -> "Filtrando: Solo compras diferidas"
+            ExpenseFilterType.PAYMENTS -> "Filtrando: Solo pagos con tarjeta"
+        }
+        showToast(msg)
+    }
+
     fun toggleFilterOnlyDeferred(onlyDeferred: Boolean? = null) {
-        val next = onlyDeferred ?: !_uiState.value.filterOnlyDeferred
-        _uiState.update { it.copy(filterOnlyDeferred = next) }
-        showToast(if (next) "Filtrando: Solo compras diferidas" else "Mostrando todos los consumos")
+        val next = onlyDeferred ?: (_uiState.value.expenseFilterType != ExpenseFilterType.DEFERRED)
+        setExpenseFilterType(if (next) ExpenseFilterType.DEFERRED else ExpenseFilterType.ALL)
     }
 
     fun setSearchQuery(query: String) {
@@ -641,8 +660,50 @@ class CreditiaViewModel @JvmOverloads constructor(
         }
     }
 
+    fun selectAllExpenses(candidateExpenses: List<ExpenseEntity>) {
+        val all = allExpenses.value.ifEmpty {
+            try {
+                kotlinx.coroutines.runBlocking { repository.getAllExpensesList() }.ifEmpty { candidateExpenses }
+            } catch (e: Exception) {
+                candidateExpenses
+            }
+        }
+        val selectable = candidateExpenses.filter { !it.isLockedByActiveDeferred(all) }
+        val selectableIds = selectable.map { it.id }.toSet()
+        if (candidateExpenses.isNotEmpty() && selectableIds.isEmpty()) {
+            showToast("No se seleccionó ningún registro: todos los registros están bloqueados")
+            return
+        }
+        val lockedCount = candidateExpenses.size - selectable.size
+        _uiState.update { it.copy(selectedExpenseIds = selectableIds, isSelectionMode = selectableIds.isNotEmpty()) }
+        if (lockedCount > 0) {
+            showToast("Se seleccionaron ${selectable.size} registros ($lockedCount bloqueados omitidos)")
+        } else if (selectable.isNotEmpty()) {
+            showToast("✓ Se seleccionaron todos los registros (${selectable.size})")
+        }
+    }
+
     fun selectAllExpenses(expenseIds: Set<Long>) {
-        _uiState.update { it.copy(selectedExpenseIds = expenseIds, isSelectionMode = expenseIds.isNotEmpty()) }
+        val all = allExpenses.value.ifEmpty {
+            try {
+                kotlinx.coroutines.runBlocking { repository.getAllExpensesList() }
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+        val filteredIds = expenseIds.filter { id ->
+            val expense = all.find { it.id == id }
+            if (expense != null) {
+                !expense.isLockedByActiveDeferred(all)
+            } else {
+                all.isEmpty()
+            }
+        }.toSet()
+        val lockedCount = expenseIds.size - filteredIds.size
+        _uiState.update { it.copy(selectedExpenseIds = filteredIds, isSelectionMode = filteredIds.isNotEmpty()) }
+        if (lockedCount > 0) {
+            showToast("Se seleccionaron ${filteredIds.size} registros ($lockedCount bloqueados omitidos)")
+        }
     }
 
     fun clearExpenseSelection() {
@@ -1033,6 +1094,9 @@ class CreditiaViewModel @JvmOverloads constructor(
             showToast("✓ Fecha de corte sobrescrita para $periodName")
         }
         recheckExpensesPeriodsForCard(cardId)
+        if (_uiState.value.isPaymentNotificationEnabled) {
+            schedulePaymentAlarm()
+        }
     }
 
     fun getCustomPaymentLimitDate(cardId: Long?, periodName: String): String? {
@@ -1061,6 +1125,9 @@ class CreditiaViewModel @JvmOverloads constructor(
                 current.copy(customPaymentLimits = current.customPaymentLimits + (key to trimmed))
             }
             showToast("✓ Fecha máxima de pago sobrescrita para $periodName")
+        }
+        if (_uiState.value.isPaymentNotificationEnabled) {
+            schedulePaymentAlarm()
         }
     }
 
@@ -1846,10 +1913,11 @@ class CreditiaViewModel @JvmOverloads constructor(
         expenses: List<ExpenseEntity>,
         selectedCard: CreditCardEntity?,
         selectedPeriod: String,
-        selectedExactDate: String?,
-        searchQuery: String,
-        sortOrder: SortOrder,
-        filterOnlyDeferred: Boolean = false
+        selectedExactDate: String? = null,
+        searchQuery: String = "",
+        sortOrder: SortOrder = SortOrder.DATE_DESC,
+        filterOnlyDeferred: Boolean = false,
+        expenseFilterType: ExpenseFilterType = if (filterOnlyDeferred) ExpenseFilterType.DEFERRED else ExpenseFilterType.ALL
     ): List<ExpenseEntity> {
         val cardId = selectedCard?.id ?: return emptyList()
         var list = expenses.filter { it.cardId == cardId }
@@ -1860,8 +1928,11 @@ class CreditiaViewModel @JvmOverloads constructor(
             list = list.filter { it.billingPeriod.equals(selectedPeriod, ignoreCase = true) }
         }
 
-        if (filterOnlyDeferred) {
-            list = list.filter { it.isDeferredInstallment() && !it.isOriginalDeferredExpense() }
+        list = when (expenseFilterType) {
+            ExpenseFilterType.ALL -> list
+            ExpenseFilterType.DEFERRED -> list.filter { it.isDeferredInstallment() && !it.isOriginalDeferredExpense() }
+            ExpenseFilterType.EXPENSES -> list.filter { it.isExpense() && !it.isDeferredInstallment() && !it.isOriginalDeferredExpense() }
+            ExpenseFilterType.PAYMENTS -> list.filter { it.isPayment() }
         }
 
         if (searchQuery.isNotBlank()) {
@@ -1886,22 +1957,34 @@ class CreditiaViewModel @JvmOverloads constructor(
         cardId: Long,
         period: String,
         exactDate: String? = null,
-        filterOnlyDeferred: Boolean = false
+        filterOnlyDeferred: Boolean = false,
+        expenseFilterType: ExpenseFilterType = if (filterOnlyDeferred) ExpenseFilterType.DEFERRED else ExpenseFilterType.ALL
     ): PeriodFinancialSummary {
-        val target = if (!exactDate.isNullOrBlank()) {
-            expenses.filter { it.cardId == cardId && it.dateString == exactDate && (!filterOnlyDeferred || (it.isDeferredInstallment() && !it.isOriginalDeferredExpense())) }
+        val targetByPeriod = if (!exactDate.isNullOrBlank()) {
+            expenses.filter { it.cardId == cardId && it.dateString == exactDate }
         } else if (period == "Todos los periodos" || period == "Todos los históricos") {
-            expenses.filter { it.cardId == cardId && (!filterOnlyDeferred || (it.isDeferredInstallment() && !it.isOriginalDeferredExpense())) }
+            expenses.filter { it.cardId == cardId }
         } else {
-            expenses.filter { it.cardId == cardId && it.billingPeriod.equals(period, ignoreCase = true) && (!filterOnlyDeferred || (it.isDeferredInstallment() && !it.isOriginalDeferredExpense())) }
+            expenses.filter { it.cardId == cardId && it.billingPeriod.equals(period, ignoreCase = true) }
+        }
+
+        val target = when (expenseFilterType) {
+            ExpenseFilterType.ALL -> targetByPeriod
+            ExpenseFilterType.DEFERRED -> targetByPeriod.filter { it.isDeferredInstallment() && !it.isOriginalDeferredExpense() }
+            ExpenseFilterType.EXPENSES -> targetByPeriod.filter { it.isExpense() && !it.isDeferredInstallment() && !it.isOriginalDeferredExpense() }
+            ExpenseFilterType.PAYMENTS -> targetByPeriod.filter { it.isPayment() }
         }
 
         val totalExpenses = target.filter { it.isExpense() }.sumOf { it.amount }
         val totalPayments = target.filter { it.isPayment() }.sumOf { it.amount }
         val totalCreditNotes = target.filter { it.isCreditNote() }.sumOf { it.amount }
         val netExpenses = (totalExpenses - totalCreditNotes).coerceAtLeast(0.0)
-        // Requisito 2: El pago final de cada periodo debe calcularse consumos-pagos a la tarjeta
-        val finalPayment = (netExpenses - totalPayments).coerceAtLeast(0.0)
+        val finalPayment = when (expenseFilterType) {
+            ExpenseFilterType.PAYMENTS -> totalPayments
+            ExpenseFilterType.EXPENSES -> totalExpenses
+            ExpenseFilterType.DEFERRED -> totalExpenses
+            ExpenseFilterType.ALL -> (netExpenses - totalPayments).coerceAtLeast(0.0)
+        }
 
         return PeriodFinancialSummary(
             totalExpenses = totalExpenses,
@@ -1917,9 +2000,10 @@ class CreditiaViewModel @JvmOverloads constructor(
         cardId: Long,
         period: String,
         exactDate: String? = null,
-        filterOnlyDeferred: Boolean = false
+        filterOnlyDeferred: Boolean = false,
+        expenseFilterType: ExpenseFilterType = if (filterOnlyDeferred) ExpenseFilterType.DEFERRED else ExpenseFilterType.ALL
     ): Double {
-        return getPeriodFinancialSummary(expenses, cardId, period, exactDate, filterOnlyDeferred).finalPaymentAmount
+        return getPeriodFinancialSummary(expenses, cardId, period, exactDate, filterOnlyDeferred, expenseFilterType).finalPaymentAmount
     }
 
     fun calculateHistoricalTotal(expenses: List<ExpenseEntity>, cardId: Long): Double {
@@ -2222,7 +2306,13 @@ class CreditiaViewModel @JvmOverloads constructor(
         val targetCard = card ?: _uiState.value.selectedCard ?: _uiState.value.cards.firstOrNull() ?: return null
         return NotificationScheduler.calculateUpcomingAlert(
             card = targetCard,
-            leadDays = _uiState.value.notificationLeadDays
+            leadDays = _uiState.value.notificationLeadDays,
+            customPaymentLimitResolver = { cardId, periodName ->
+                getCustomPaymentLimitDate(cardId, periodName)
+            },
+            customCutDateResolver = { cardId, periodName ->
+                getCustomCutDate(cardId, periodName)
+            }
         )
     }
 
@@ -2264,15 +2354,26 @@ class CreditiaViewModel @JvmOverloads constructor(
 
         val schedule = NotificationScheduler.calculateUpcomingAlert(
             card = targetCard,
-            leadDays = _uiState.value.notificationLeadDays
+            leadDays = _uiState.value.notificationLeadDays,
+            customPaymentLimitResolver = { cardId, periodName ->
+                getCustomPaymentLimitDate(cardId, periodName)
+            },
+            customCutDateResolver = { cardId, periodName ->
+                getCustomCutDate(cardId, periodName)
+            }
         )
 
         try {
             val notifId = (PAYMENT_NOTIFICATION_ID + targetCard.id).toInt()
+            val explanation = if (schedule.isOverwritten) {
+                "Fecha máxima de pago personalizada sobrescrita para este periodo."
+            } else {
+                "Fecha calculada sumando ${targetCard.payBusinessDays} días hábiles tras la fecha de corte (día ${targetCard.cutDay} de ${schedule.periodName})."
+            }
             val builder = NotificationCompat.Builder(app, NOTIFICATION_CHANNEL_ID)
                 .setSmallIcon(com.example.R.mipmap.ic_launcher)
                 .setContentTitle("🔔 Recordatorio de Pago: ${schedule.cardName}")
-                .setContentText("Fecha máxima de pago: ${schedule.paymentLimitDateStr}. ¡Aviso ${schedule.leadDays} días antes!")
+                .setContentText("Tu pago vence en ${schedule.leadDays} días (${schedule.paymentLimitDateStr}). ¡Paga a tiempo!")
                 .setStyle(
                     NotificationCompat.BigTextStyle().bigText(
                         "¡No olvides realizar el pago de tu tarjeta ${schedule.cardName}!\n\n" +
@@ -2280,7 +2381,7 @@ class CreditiaViewModel @JvmOverloads constructor(
                         "• Fecha máxima de pago: ${schedule.paymentLimitDesc}\n" +
                         "• Aviso establecido: ${schedule.alertDateDesc} (a las 09:00 AM)\n" +
                         "• Anticipación configurada: ${schedule.leadDays} días antes\n\n" +
-                        "La fecha de aviso llegará exactamente en la fecha establecida."
+                        explanation
                     )
                 )
                 .setPriority(NotificationCompat.PRIORITY_HIGH)

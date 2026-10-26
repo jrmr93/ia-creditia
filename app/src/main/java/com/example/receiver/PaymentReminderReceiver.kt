@@ -35,8 +35,9 @@ class PaymentReminderReceiver : BroadcastReceiver() {
         val alertDate = intent.getStringExtra("alert_date") ?: ""
         val businessDays = intent.getIntExtra("business_days", 12)
         val cutDay = intent.getIntExtra("cut_day", 24)
+        val isOverwritten = intent.getBooleanExtra("is_overwritten", false)
 
-        Log.d(TAG, "Payment alarm received for $cardName (cardId: $cardId, limit: $paymentLimit, alertDate: $alertDate)")
+        Log.d(TAG, "Payment alarm received for $cardName (cardId: $cardId, limit: $paymentLimit, alertDate: $alertDate, isOverwritten: $isOverwritten)")
 
         // Ensure notification channel exists
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -63,6 +64,11 @@ class PaymentReminderReceiver : BroadcastReceiver() {
 
         try {
             val notifId = (CreditiaViewModel.PAYMENT_NOTIFICATION_ID + cardId).toInt()
+            val explanation = if (isOverwritten) {
+                "Fecha máxima de pago personalizada sobrescrita para este periodo."
+            } else {
+                "Fecha calculada sumando $businessDays días hábiles tras la fecha superior de corte (día $cutDay de $periodName)."
+            }
             val builder = NotificationCompat.Builder(context, CreditiaViewModel.NOTIFICATION_CHANNEL_ID)
                 .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentTitle("🔔 Recordatorio de Pago: $cardName")
@@ -73,7 +79,7 @@ class PaymentReminderReceiver : BroadcastReceiver() {
                         "• Periodo contable: $periodName\n" +
                         "• Fecha máxima de pago: $paymentLimitDesc\n" +
                         "• Aviso programado: $leadDays días antes ($alertDate)\n\n" +
-                        "Fecha calculada sumando $businessDays días hábiles tras la fecha superior de corte (día $cutDay de $periodName)."
+                        explanation
                     )
                 )
                 .setPriority(NotificationCompat.PRIORITY_HIGH)

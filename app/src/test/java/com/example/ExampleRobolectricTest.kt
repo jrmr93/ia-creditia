@@ -692,6 +692,255 @@ class ExampleRobolectricTest {
 
     db.close()
   }
+
+  @Test
+  fun testExpenseFilterTypesAndPeriodSum() {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val db = Room.inMemoryDatabaseBuilder(app, AppDatabase::class.java)
+      .allowMainThreadQueries()
+      .build()
+    val repo = CreditiaRepository(db.creditCardDao(), db.expenseDao())
+    val vm = CreditiaViewModel(app, repo)
+
+    val card = CreditCardEntity(
+      id = 1,
+      bankName = "PICHINCHA",
+      cardName = "Visa Gold",
+      network = "VISA",
+      tier = "GOLD",
+      last4 = "1234",
+      cutDay = 24,
+      payDay = 10
+    )
+
+    val normalExpense = ExpenseEntity(
+      id = 101,
+      cardId = 1,
+      establishment = "Supermercado",
+      description = "Víveres",
+      amount = 80.0,
+      dateString = "2026/10/15",
+      billingPeriod = "Octubre 2026",
+      transactionType = ExpenseEntity.TYPE_EXPENSE
+    )
+
+    val originalDeferred = ExpenseEntity(
+      id = 102,
+      cardId = 1,
+      establishment = "Laptop Gamer Store",
+      description = "Laptop Gamer Original",
+      amount = 600.0,
+      dateString = "2026/10/10",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = "def_laptop_102",
+      transactionType = ExpenseEntity.TYPE_EXPENSE
+    )
+
+    val deferredInstallment = ExpenseEntity(
+      id = 103,
+      cardId = 1,
+      establishment = "Laptop Gamer Store",
+      description = "Laptop Gamer (Cuota 1/3)",
+      amount = 200.0,
+      dateString = "2026/10/10",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = "def_laptop_102",
+      transactionType = ExpenseEntity.TYPE_EXPENSE
+    )
+
+    val cardPayment = ExpenseEntity(
+      id = 104,
+      cardId = 1,
+      establishment = "Abono a tarjeta",
+      description = "Pago en ventanilla",
+      amount = 50.0,
+      dateString = "2026/10/20",
+      billingPeriod = "Octubre 2026",
+      transactionType = ExpenseEntity.TYPE_PAYMENT
+    )
+
+    val creditNote = ExpenseEntity(
+      id = 105,
+      cardId = 1,
+      establishment = "Nota de Crédito - Laptop Gamer Store",
+      description = "Anulación por diferido",
+      amount = 600.0,
+      dateString = "2026/10/10",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = "def_laptop_102",
+      transactionType = ExpenseEntity.TYPE_CREDIT_NOTE
+    )
+
+    val allExpenses = listOf(normalExpense, originalDeferred, deferredInstallment, cardPayment, creditNote)
+
+    // 1. Filtrar solo Consumos corrientes (excluye original diferido y cuotas diferidas y pagos y notas de crédito)
+    val consumos = vm.getFilteredExpenses(
+      expenses = allExpenses,
+      selectedCard = card,
+      selectedPeriod = "Octubre 2026",
+      expenseFilterType = com.example.ui.viewmodel.ExpenseFilterType.EXPENSES
+    )
+    assertEquals(1, consumos.size)
+    assertEquals(101L, consumos[0].id)
+    assertEquals(80.0, vm.calculatePeriodSum(allExpenses, 1, "Octubre 2026", expenseFilterType = com.example.ui.viewmodel.ExpenseFilterType.EXPENSES), 0.001)
+
+    // 2. Filtrar solo Diferidos (solo cuotas activas, excluye consumo original de 600)
+    val diferidos = vm.getFilteredExpenses(
+      expenses = allExpenses,
+      selectedCard = card,
+      selectedPeriod = "Octubre 2026",
+      expenseFilterType = com.example.ui.viewmodel.ExpenseFilterType.DEFERRED
+    )
+    assertEquals(1, diferidos.size)
+    assertEquals(103L, diferidos[0].id)
+    assertEquals(200.0, vm.calculatePeriodSum(allExpenses, 1, "Octubre 2026", expenseFilterType = com.example.ui.viewmodel.ExpenseFilterType.DEFERRED), 0.001)
+
+    // 3. Filtrar solo Pagos a la tarjeta
+    val pagos = vm.getFilteredExpenses(
+      expenses = allExpenses,
+      selectedCard = card,
+      selectedPeriod = "Octubre 2026",
+      expenseFilterType = com.example.ui.viewmodel.ExpenseFilterType.PAYMENTS
+    )
+    assertEquals(1, pagos.size)
+    assertEquals(104L, pagos[0].id)
+    assertEquals(50.0, vm.calculatePeriodSum(allExpenses, 1, "Octubre 2026", expenseFilterType = com.example.ui.viewmodel.ExpenseFilterType.PAYMENTS), 0.001)
+
+    // 4. Filtrar Todos (incluye todos los registros del periodo)
+    val todos = vm.getFilteredExpenses(
+      expenses = allExpenses,
+      selectedCard = card,
+      selectedPeriod = "Octubre 2026",
+      expenseFilterType = com.example.ui.viewmodel.ExpenseFilterType.ALL
+    )
+    assertEquals(5, todos.size)
+    // Para ALL: (80 + 600 + 200 - 600) - 50 = 230.0
+    assertEquals(230.0, vm.calculatePeriodSum(allExpenses, 1, "Octubre 2026", expenseFilterType = com.example.ui.viewmodel.ExpenseFilterType.ALL), 0.001)
+
+    db.close()
+  }
+
+  @Test
+  fun testSelectAllExpensesExcludesLockedRecords() = runTest {
+    val app = ApplicationProvider.getApplicationContext<Application>()
+    val db = Room.inMemoryDatabaseBuilder(app, AppDatabase::class.java)
+      .allowMainThreadQueries()
+      .build()
+    val repo = CreditiaRepository(db.creditCardDao(), db.expenseDao())
+    val vm = CreditiaViewModel(app, repo)
+
+    val card = CreditCardEntity(
+      id = 1,
+      bankName = "PICHINCHA",
+      cardName = "Visa Signature",
+      network = "VISA",
+      tier = "SIGNATURE",
+      last4 = "4321",
+      cutDay = 24,
+      payDay = 10
+    )
+    repo.insertCard(card)
+
+    // Consumo normal (NO bloqueado)
+    val normal = ExpenseEntity(
+      id = 1,
+      cardId = 1,
+      establishment = "Farmacia",
+      description = "Medicamentos",
+      amount = 35.0,
+      dateString = "2026/10/12",
+      billingPeriod = "Octubre 2026",
+      transactionType = ExpenseEntity.TYPE_EXPENSE
+    )
+
+    // Consumo original con diferido activo (BLOQUEADO)
+    val originalDeferred = ExpenseEntity(
+      id = 2,
+      cardId = 1,
+      establishment = "Apple Store",
+      description = "iPhone 15 Pro",
+      amount = 1200.0,
+      dateString = "2026/10/10",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = "def_iphone_15",
+      transactionType = ExpenseEntity.TYPE_EXPENSE
+    )
+
+    // Nota de crédito creada por diferido (BLOQUEADO)
+    val creditNote = ExpenseEntity(
+      id = 3,
+      cardId = 1,
+      establishment = "Nota de Crédito - Apple Store",
+      description = "Anulación por diferido a 6 cuotas",
+      amount = 1200.0,
+      dateString = "2026/10/10",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = "def_iphone_15",
+      transactionType = ExpenseEntity.TYPE_CREDIT_NOTE
+    )
+
+    // Cuota activa del diferido (NO bloqueada, se puede pagar/seleccionar)
+    val cuota1 = ExpenseEntity(
+      id = 4,
+      cardId = 1,
+      establishment = "Apple Store",
+      description = "iPhone 15 Pro (Cuota 1/6)",
+      amount = 200.0,
+      dateString = "2026/10/10",
+      billingPeriod = "Octubre 2026",
+      deferredGroupId = "def_iphone_15",
+      transactionType = ExpenseEntity.TYPE_EXPENSE
+    )
+
+    // Pago a tarjeta (NO bloqueado)
+    val payment = ExpenseEntity(
+      id = 5,
+      cardId = 1,
+      establishment = "Abono",
+      description = "Pago parcial",
+      amount = 100.0,
+      dateString = "2026/10/20",
+      billingPeriod = "Octubre 2026",
+      transactionType = ExpenseEntity.TYPE_PAYMENT
+    )
+
+    db.expenseDao().insertExpenses(listOf(normal, originalDeferred, creditNote, cuota1, payment))
+
+    val allCandidates = listOf(normal, originalDeferred, creditNote, cuota1, payment)
+
+    // Verificar que originalDeferred y creditNote están bloqueados
+    org.junit.Assert.assertTrue("Consumo original debe estar bloqueado", originalDeferred.isLockedByActiveDeferred(allCandidates))
+    org.junit.Assert.assertTrue("Nota de crédito debe estar bloqueada", creditNote.isLockedByActiveDeferred(allCandidates))
+    org.junit.Assert.assertFalse("Consumo normal NO debe estar bloqueado", normal.isLockedByActiveDeferred(allCandidates))
+    org.junit.Assert.assertFalse("Cuota diferida NO debe estar bloqueada", cuota1.isLockedByActiveDeferred(allCandidates))
+    org.junit.Assert.assertFalse("Pago NO debe estar bloqueado", payment.isLockedByActiveDeferred(allCandidates))
+
+    // Ejecutar selectAllExpenses con los candidatos
+    vm.selectAllExpenses(allCandidates)
+
+    val selectedIds = vm.uiState.value.selectedExpenseIds
+    org.junit.Assert.assertEquals(3, selectedIds.size)
+    org.junit.Assert.assertTrue("Debe contener consumo normal", selectedIds.contains(1L))
+    org.junit.Assert.assertTrue("Debe contener cuota 1", selectedIds.contains(4L))
+    org.junit.Assert.assertTrue("Debe contener pago", selectedIds.contains(5L))
+    org.junit.Assert.assertFalse("NO debe contener consumo original bloqueado", selectedIds.contains(2L))
+    org.junit.Assert.assertFalse("NO debe contener nota de crédito bloqueada", selectedIds.contains(3L))
+    org.junit.Assert.assertTrue("Debe estar en modo selección", vm.uiState.value.isSelectionMode)
+
+    // Deseleccionar
+    vm.clearExpenseSelection()
+    org.junit.Assert.assertEquals(0, vm.uiState.value.selectedExpenseIds.size)
+    org.junit.Assert.assertFalse(vm.uiState.value.isSelectionMode)
+
+    // Ejecutar selectAllExpenses pasando solo IDs
+    vm.selectAllExpenses(setOf(1L, 2L, 3L, 4L, 5L))
+    val selectedFromIds = vm.uiState.value.selectedExpenseIds
+    org.junit.Assert.assertEquals(3, selectedFromIds.size)
+    org.junit.Assert.assertFalse(selectedFromIds.contains(2L))
+    org.junit.Assert.assertFalse(selectedFromIds.contains(3L))
+
+    db.close()
+  }
 }
 
 

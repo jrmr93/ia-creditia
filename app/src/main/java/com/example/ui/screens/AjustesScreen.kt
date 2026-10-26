@@ -616,7 +616,7 @@ fun AjustesScreen(
             item {
                 val activeCard = uiState.selectedCard ?: uiState.cards.firstOrNull()
                 val upcomingSchedule = activeCard?.let { viewModel.getUpcomingAlertSchedule(it) }
-                val paymentLimit = upcomingSchedule?.paymentLimitDateStr ?: viewModel.getPaymentLimitDateForPeriod(activeCard, viewModel.getCurrentActivePeriod(activeCard))
+                val paymentLimit = upcomingSchedule?.paymentLimitDateStr ?: viewModel.getEffectivePaymentLimitDateForPeriod(activeCard, viewModel.getCurrentActivePeriod(activeCard))
                 val paymentLimitDesc = upcomingSchedule?.paymentLimitDesc ?: viewModel.getPaymentLimitDateDescription(activeCard, viewModel.getCurrentActivePeriod(activeCard))
                 val alertDate = upcomingSchedule?.alertDateStr ?: viewModel.calculateNotificationDate(paymentLimit, uiState.notificationLeadDays)
                 val alertDateDesc = upcomingSchedule?.alertDateDesc ?: alertDate
@@ -860,12 +860,31 @@ fun AjustesScreen(
                                                     fontSize = 11.sp,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
-                                                Text(
-                                                    text = paymentLimit,
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.onSurface
-                                                )
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = paymentLimit,
+                                                        fontSize = 14.sp,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onSurface
+                                                    )
+                                                    if (upcomingSchedule?.isOverwritten == true) {
+                                                        Surface(
+                                                            shape = RoundedCornerShape(4.dp),
+                                                            color = Color(0xFFF59E0B).copy(alpha = 0.15f)
+                                                        ) {
+                                                            Text(
+                                                                text = "Personalizada",
+                                                                fontSize = 9.sp,
+                                                                fontWeight = FontWeight.Bold,
+                                                                color = Color(0xFFD97706),
+                                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
                                             }
                                             Column(horizontalAlignment = Alignment.End) {
                                                 Text(

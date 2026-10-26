@@ -21,7 +21,8 @@ data class PaymentAlertSchedule(
     val alertDateDesc: String,
     val triggerMillis: Long,
     val daysUntilAlert: Int,
-    val leadDays: Int
+    val leadDays: Int,
+    val isOverwritten: Boolean = false
 )
 
 object NotificationScheduler {
@@ -43,13 +44,72 @@ object NotificationScheduler {
     )
 
     /**
+     * Parsea fechas en formatos variados: "Mar 10/11/2026", "10/11/2026", "2026/11/10", "2026-11-10", "10-11-2026".
+     */
+    fun parseCustomDate(dateStr: String): Calendar? {
+        if (dateStr.isBlank()) return null
+        return try {
+            val clean = dateStr.replace(Regex("""^[A-Za-zÁÉÍÓÚáéíóúñÑ.,\s]+"""), "").trim()
+            val parts = if (clean.contains("/")) clean.split("/") else clean.split("-")
+            if (parts.size == 3) {
+                val cal = Calendar.getInstance().apply {
+                    set(Calendar.HOUR_OF_DAY, 0)
+                    set(Calendar.MINUTE, 0)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                if (parts[0].length == 4) {
+                    // YYYY/MM/DD o YYYY-MM-DD
+                    cal.set(parts[0].toInt(), parts[1].toInt() - 1, parts[2].toInt())
+                } else {
+                    // DD/MM/YYYY o DD-MM-YYYY
+                    cal.set(parts[2].toInt(), parts[1].toInt() - 1, parts[0].toInt())
+                }
+                cal
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Sobrecarga que extrae automáticamente las fechas sobrescritas desde SharedPreferences.
+     */
+    fun calculateUpcomingAlert(
+        context: Context,
+        card: CreditCardEntity,
+        leadDays: Int,
+        currentTimeMillis: Long = System.currentTimeMillis()
+    ): PaymentAlertSchedule {
+        val prefs = context.getSharedPreferences("creditia_secure_prefs", Context.MODE_PRIVATE)
+        return calculateUpcomingAlert(
+            card = card,
+            leadDays = leadDays,
+            currentTimeMillis = currentTimeMillis,
+            customPaymentLimitResolver = { cardId, periodName ->
+                val key = "${cardId}_${periodName}"
+                prefs.getString("custom_payment_limit_$key", null)
+            },
+            customCutDateResolver = { cardId, periodName ->
+                val key = "${cardId}_${periodName}"
+                prefs.getString("custom_cut_date_$key", null)
+            }
+        )
+    }
+
+    /**
      * Calculates the exact upcoming payment limit date and the corresponding notification reminder date.
      * Guarantees that the returned triggerMillis is strictly in the future on the exact date established.
+     * Takes into account overwritten payment limit dates if present for that period; otherwise calculates automatically.
      */
     fun calculateUpcomingAlert(
         card: CreditCardEntity,
         leadDays: Int,
-        currentTimeMillis: Long = System.currentTimeMillis()
+        currentTimeMillis: Long = System.currentTimeMillis(),
+        customPaymentLimitResolver: ((Long, String) -> String?)? = null,
+        customCutDateResolver: ((Long, String) -> String?)? = null
     ): PaymentAlertSchedule {
         val nowCal = Calendar.getInstance().apply { timeInMillis = currentTimeMillis }
         val currentYear = nowCal.get(Calendar.YEAR)
@@ -63,9 +123,12 @@ object NotificationScheduler {
                 set(Calendar.DAY_OF_MONTH, 1)
                 add(Calendar.MONTH, monthOffset)
             }
-            val cutCal = com.example.data.repository.CreditiaRepository.getCutCalendar(
-                targetCal.get(Calendar.YEAR),
-                targetCal.get(Calendar.MONTH),
+            val tYear = targetCal.get(Calendar.YEAR)
+            val tMonth = targetCal.get(Calendar.MONTH)
+
+            val baseCutCal = com.example.data.repository.CreditiaRepository.getCutCalendar(
+                tYear,
+                tMonth,
                 card.cutDay
             ).apply {
                 set(Calendar.HOUR_OF_DAY, 0)
@@ -74,12 +137,30 @@ object NotificationScheduler {
                 set(Calendar.MILLISECOND, 0)
             }
 
-            val cutMonthIndex = cutCal.get(Calendar.MONTH)
-            val cutYear = cutCal.get(Calendar.YEAR)
+            val cutMonthIndex = baseCutCal.get(Calendar.MONTH)
+            val cutYear = baseCutCal.get(Calendar.YEAR)
             val periodName = "${MONTH_NAMES[cutMonthIndex]} $cutYear"
 
-            // Compute payment limit date counting business days from effective cut date inclusive
-            val payLimitCal = com.example.data.repository.CreditiaRepository.calculateMaxPaymentCalendar(cutCal, card.payBusinessDays)
+            // 1. Revisar si hay fecha máxima de pago sobrescrita para este periodo
+            val customPaymentStr = customPaymentLimitResolver?.invoke(card.id, periodName)
+            val parsedCustomPay = customPaymentStr?.let { parseCustomDate(it) }
+
+            val payLimitCal: Calendar
+            val isOverwritten: Boolean
+
+            if (parsedCustomPay != null) {
+                payLimitCal = parsedCustomPay
+                isOverwritten = true
+            } else {
+                // 2. Si no tiene fecha de pago sobrescrita, revisar si la fecha de corte fue sobrescrita o usar automática
+                val customCutStr = customCutDateResolver?.invoke(card.id, periodName)
+                val effectiveCutCal = customCutStr?.let { parseCustomDate(it) } ?: baseCutCal
+                payLimitCal = com.example.data.repository.CreditiaRepository.calculateMaxPaymentCalendar(
+                    effectiveCutCal,
+                    card.payBusinessDays
+                )
+                isOverwritten = false
+            }
 
             val payDayNum = payLimitCal.get(Calendar.DAY_OF_MONTH)
             val payMonthNum = payLimitCal.get(Calendar.MONTH) + 1
@@ -123,7 +204,8 @@ object NotificationScheduler {
                     alertDateDesc = alertDateDesc,
                     triggerMillis = alertMillis,
                     daysUntilAlert = daysUntil,
-                    leadDays = leadDays
+                    leadDays = leadDays,
+                    isOverwritten = isOverwritten
                 )
             }
         }
@@ -151,7 +233,8 @@ object NotificationScheduler {
             alertDateDesc = "$fDay de ${MONTH_NAMES_LOWER[fallbackCal.get(Calendar.MONTH)]} de $fYear",
             triggerMillis = fallbackCal.timeInMillis,
             daysUntilAlert = 1,
-            leadDays = leadDays
+            leadDays = leadDays,
+            isOverwritten = false
         )
     }
 
@@ -164,7 +247,7 @@ object NotificationScheduler {
         card: CreditCardEntity,
         leadDays: Int
     ): PaymentAlertSchedule? {
-        val schedule = calculateUpcomingAlert(card, leadDays)
+        val schedule = calculateUpcomingAlert(context, card, leadDays)
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return null
 
         val intent = Intent(context, PaymentReminderReceiver::class.java).apply {
@@ -178,6 +261,7 @@ object NotificationScheduler {
             putExtra("alert_date_desc", schedule.alertDateDesc)
             putExtra("business_days", card.payBusinessDays)
             putExtra("cut_day", card.cutDay)
+            putExtra("is_overwritten", schedule.isOverwritten)
         }
 
         val requestCode = (BASE_ALARM_REQUEST_CODE + card.id).toInt()
